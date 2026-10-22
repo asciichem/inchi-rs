@@ -51,6 +51,16 @@ impl Structure {
         self.atoms.iter().map(|a| a.charge).sum()
     }
 
+    /// Number of incident bonds per atom (heavy-atom degree).
+    pub fn degrees(&self) -> Vec<u32> {
+        let mut degrees = vec![0; self.atoms.len()];
+        for &(from, to, _) in &self.bonds {
+            degrees[from] += 1;
+            degrees[to] += 1;
+        }
+        degrees
+    }
+
     /// Bond-order sums per atom index.
     pub fn bond_order_sums(&self) -> Vec<f64> {
         let mut sums = vec![0.0; self.atoms.len()];
@@ -62,24 +72,34 @@ impl Structure {
         sums
     }
 
-    /// Element → count, with implicit hydrogens: MDL H-count codes
+    /// Implicit/explicit hydrogen count per atom: MDL H-count codes
     /// win, otherwise the valence gap (the oracle does the same for
     /// code-0 atoms — a bare `O` line derives H2O). Anionic
     /// heteroatoms take zero: their standardization crosses the
     /// `/p` layer.
+    pub fn hydrogens(&self) -> Vec<u32> {
+        let sums = self.bond_order_sums();
+        self.atoms
+            .iter()
+            .zip(&sums)
+            .map(|(atom, sum)| {
+                if atom.h_count > 0 {
+                    atom.h_count
+                } else if atom.charge < 0 {
+                    0
+                } else {
+                    (valence(&atom.element) - sum).max(0.0) as u32
+                }
+            })
+            .collect()
+    }
+
+    /// Element → count, with the hydrogens from [`Self::hydrogens`].
     pub fn composition(&self) -> Vec<(String, u32)> {
         use std::collections::BTreeMap;
-        let sums = self.bond_order_sums();
         let mut map: BTreeMap<String, u32> = BTreeMap::new();
-        for (atom, sum) in self.atoms.iter().zip(&sums) {
+        for (atom, hydrogens) in self.atoms.iter().zip(self.hydrogens()) {
             *map.entry(atom.element.clone()).or_insert(0) += 1;
-            let hydrogens = if atom.h_count > 0 {
-                atom.h_count
-            } else if atom.charge < 0 {
-                0
-            } else {
-                (valence(&atom.element) - sum).max(0.0) as u32
-            };
             if hydrogens > 0 {
                 *map.entry("H".to_string()).or_insert(0) += hydrogens;
             }
