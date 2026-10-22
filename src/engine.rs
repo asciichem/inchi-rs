@@ -105,11 +105,24 @@ mod tests {
 
     #[test]
     fn a_milestone_partial_layer_set_refuses_to_assemble_an_inchi() {
-        // Formula is registered, connection is not: the default set is
-        // milestone-partial and must not present a prefix as an InChI.
-        let engine = Engine::from_molfile(WATER).expect("parses");
+        // No connection layer registered: the set is milestone-partial
+        // and must not present a prefix as an InChI.
+        let engine = Engine {
+            structure: crate::parse_molfile(WATER).expect("parses"),
+            layers: vec![Box::new(FixedSegment {
+                order: order::FORMULA,
+                kind: None,
+                text: "H2O",
+            })],
+        };
         let error = engine.inchi_string().unwrap_err();
         assert!(error.message().contains("mandatory layer kind"));
+    }
+
+    #[test]
+    fn water_assembles_from_the_registered_layers() {
+        let engine = Engine::from_molfile(WATER).expect("parses");
+        assert_eq!(engine.inchi_string().unwrap(), "InChI=1S/H2O");
     }
 
     #[test]

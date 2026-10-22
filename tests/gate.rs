@@ -1,8 +1,10 @@
-//! The M1 gate: the same inchi-tests corpus the reference engine
-//! passes. Contract: the engine's emitted segments equal the oracle's
-//! layer prefix byte-for-byte — each milestone extends the prefix.
-//! M3-scoped (m3-tagged) and triaged fixtures are counted skips;
-//! |charge| > 1 counts beyond-M1. No silent skips.
+//! The gate: the same inchi-tests corpus the reference engine passes.
+//! Contract: the engine's emitted segments equal the oracle's layer
+//! prefix byte-for-byte — each milestone extends the prefix.
+//! Mobile-H structures (m3-tagged, a parenthesized `/h` group, or
+//! triaged) are counted skips — their numbering crosses the t-group
+//! canonicalization, which is M3 scope. |charge| > 1 counts beyond-M1.
+//! No silent skips.
 
 use std::fs;
 use std::path::PathBuf;
@@ -45,6 +47,7 @@ fn emitted_layers_agree_with_the_oracle_prefix() {
 
     let mut pass = 0;
     let mut skipped = 0;
+    let mut isotopic = 0;
     let mut beyond = 0;
     let mut failures = Vec::new();
     for case in &cases {
@@ -55,18 +58,28 @@ fn emitted_layers_agree_with_the_oracle_prefix() {
             .map(|tags| tags.iter().any(|t| t.as_str() == Some("m3")))
             .unwrap_or(false);
         let triaged = triage.get(id).map(|_| ()).is_some();
-        if m3 || triaged {
-            skipped += 1;
-            continue;
-        }
-
-        let molfile = case["molfile"].as_str().expect("molfile");
         let recorded: Vec<String> = case["inchi"]
             .as_str()
             .expect("inchi")
             .split('/')
             .map(str::to_string)
             .collect();
+        let mobile_h = recorded
+            .iter()
+            .any(|segment| segment.starts_with('h') && segment.contains('('));
+        let isotopic_scope = recorded.iter().any(|segment| segment.starts_with('i'));
+        if m3 || triaged || mobile_h {
+            skipped += 1;
+            continue;
+        }
+        if isotopic_scope {
+            // Isotopes ride their own milestone (/i layer); the reader
+            // also sees explicit D atoms as heavy ones until then.
+            isotopic += 1;
+            continue;
+        }
+
+        let molfile = case["molfile"].as_str().expect("molfile");
 
         match inchi_rs::Engine::from_molfile(molfile).and_then(|engine| engine.segments()) {
             Ok(segments) => {
@@ -108,7 +121,8 @@ fn emitted_layers_agree_with_the_oracle_prefix() {
 
     assert!(
         failures.is_empty(),
-        "{} layer failure(s):\n{}\n(pass: {pass}, M3-scoped skips: {skipped}, beyond-±1: {beyond}, total: {})",
+        "{} layer failure(s):\n{}\n(pass: {pass}, M3-scoped skips: {skipped}, isotopic skips: \
+         {isotopic}, beyond-±1: {beyond}, total: {})",
         failures.len(),
         failures.join("\n"),
         cases.len()

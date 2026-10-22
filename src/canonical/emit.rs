@@ -1,0 +1,181 @@
+//! The `/c` segment: the connection table rendered as the reference's
+//! DFS emission (`GetDfsOrder4CT` + the string form of
+//! `MakeCtStringNew`, hydrogen-free).
+//!
+//! First pass: number the table's graph depth-first from the atom with
+//! the fewest bonds, counting subtree sizes and marking ring closures
+//! (edges to ancestors) and deleted parent returns. Neighbors are then
+//! ordered by subtree size, closures first. Second pass emits the
+//! numbers with branch delimiters: `(` opens the branches of an atom,
+//! `,` separates them, `)` precedes the last (inline) branch, `-`
+//! joins a lone continuation.
+
+use super::table::ConnectionTable;
+
+const DELETED: usize = usize::MAX;
+
+pub fn connection_segment(table: &ConnectionTable) -> Option<String> {
+    let adjacency = neighbor_lists(table)?;
+    let n = adjacency.len();
+    if n < 2 {
+        return None;
+    }
+    let start = (0..n)
+        .min_by_key(|&i| (adjacency[i].len(), i))
+        .expect("n > 0");
+
+    // First DFS: visit order, subtree sizes (closures included), and
+    // the deletion of parent returns and already-emitted closures.
+    let mut dfs_number = vec![0u32; n];
+    let mut descendants = vec![0u32; n];
+    let mut cursor = vec![0usize; n];
+    let mut neighbors = adjacency.clone();
+    let mut stack = vec![start];
+    dfs_number[start] = 1;
+    descendants[start] = 1;
+    let mut next_number = 1u32;
+    while let Some(&i) = stack.last() {
+        let parent = if stack.len() >= 2 {
+            stack[stack.len() - 2]
+        } else {
+            usize::MAX
+        };
+        let mut descended = false;
+        while cursor[i] < neighbors[i].len() {
+            cursor[i] += 1;
+            let u = neighbors[i][cursor[i] - 1];
+            if dfs_number[u] == 0 {
+                next_number += 1;
+                dfs_number[u] = next_number;
+                descendants[u] = 1;
+                stack.push(u);
+                descended = true;
+                break;
+            } else if u != parent && dfs_number[u] < dfs_number[i] {
+                // Ring closure: the ancestor side keeps this edge.
+                descendants[i] += 1;
+            } else {
+                neighbors[i][cursor[i] - 1] = DELETED;
+            }
+        }
+        if descended {
+            continue;
+        }
+        cursor[i] = 0;
+        stack.pop();
+        if let Some(&p) = stack.last() {
+            descendants[p] += descendants[i];
+        }
+    }
+
+    // Order each neighbor list: closures first, then children by
+    // subtree size, then by canonical number; deleted entries last.
+    for i in 0..n {
+        neighbors[i].sort_by_key(|&u| {
+            if u == DELETED {
+                (u32::MAX, u)
+            } else if dfs_number[i] > dfs_number[u] {
+                (0, u)
+            } else {
+                (descendants[u], u)
+            }
+        });
+        let kept = neighbors[i].iter().take_while(|&&u| u != DELETED).count();
+        neighbors[i].truncate(kept);
+    }
+
+    // Second DFS: emit the numbers with their delimiters.
+    let mut out = String::new();
+    let mut cursor = vec![0usize; n];
+    let mut stack = vec![start];
+    out.push_str(&(start + 1).to_string());
+    while let Some(&i) = stack.last() {
+        if cursor[i] >= neighbors[i].len() {
+            cursor[i] = 0;
+            stack.pop();
+            continue;
+        }
+        cursor[i] += 1;
+        let j = cursor[i] - 1;
+        let u = neighbors[i][j];
+        let delimiter = if neighbors[i].len() > 1 {
+            if j == 0 {
+                '('
+            } else if j == neighbors[i].len() - 1 {
+                ')'
+            } else {
+                ','
+            }
+        } else {
+            '-'
+        };
+        out.push(delimiter);
+        out.push_str(&(u + 1).to_string());
+        if dfs_number[u] > dfs_number[i] {
+            stack.push(u);
+        }
+    }
+    Some(out)
+}
+
+/// Symmetric neighbor lists rebuilt from the table (`CreateNeighListFromLinearCT`).
+fn neighbor_lists(table: &ConnectionTable) -> Option<Vec<Vec<usize>>> {
+    let entries = table.entries();
+    let n = table.atoms();
+    if n == 0 {
+        return None;
+    }
+    let mut adjacency = vec![Vec::new(); n];
+    let mut vertex_rank = entries.first().copied()?;
+    for &entry in &entries[1..] {
+        if entry < vertex_rank {
+            let v = vertex_rank as usize - 1;
+            let u = entry as usize - 1;
+            adjacency[v].push(u);
+            adjacency[u].push(v);
+        } else {
+            vertex_rank = entry;
+        }
+    }
+    Some(adjacency)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::canonical::invariants::atom_invariants;
+    use crate::canonical::search::canonical_table;
+
+    fn segment(elements: &[&str], bonds: &[(usize, usize)]) -> String {
+        let n = elements.len();
+        let mut adjacency = vec![Vec::new(); n];
+        for &(a, b) in bonds {
+            adjacency[a].push(b);
+            adjacency[b].push(a);
+        }
+        let elements: Vec<String> = elements.iter().map(|s| s.to_string()).collect();
+        let invariants = atom_invariants(&elements, &adjacency);
+        let table = canonical_table(&adjacency, &invariants);
+        connection_segment(&table).expect("segment")
+    }
+
+    #[test]
+    fn acetaldehyde_is_a_chain() {
+        // Oracle: InChI=1S/C2H4O/c1-2-3/h2H,1H3.
+        assert_eq!(segment(&["C", "C", "O"], &[(0, 1), (1, 2)]), "1-2-3");
+    }
+
+    #[test]
+    fn benzene_walks_1_2_4_6_5_3() {
+        // Oracle: InChI=1S/C6H6/c1-2-4-6-5-3-1/h1-6H.
+        let bonds: Vec<(usize, usize)> = (0..6).map(|i| (i, (i + 1) % 6)).collect();
+        assert_eq!(segment(&["C"; 6], &bonds), "1-2-4-6-5-3-1");
+    }
+
+    #[test]
+    fn branches_use_parentheses_with_the_last_branch_inline() {
+        // Oracle: InChI=1S/C4H10/c1-4(2)3/h4H,1-3H3 (isobutane).
+        let got = segment(&["C", "C", "C", "C"], &[(0, 1), (0, 2), (0, 3)]);
+        assert_eq!(got, "1-4(2)3");
+    }
+}

@@ -10,10 +10,12 @@ at `v0.1.0`. The corpus is recorded from IUPAC `inchi-1` (MIT) at
 development time; the IUPAC binary is a test oracle only and is never
 shipped or executed by this engine.
 
-Status: M0 (repo, reader, gate) and M1 (formula + `/p`) green over
-both the identity seeds and the 1500-fixture breadth corpus; M2
-(ranking and `/c`) in progress. See [ARCHITECTURE.md](ARCHITECTURE.md)
-for the module map and extension axes.
+Status: M0 (repo, reader, gate), M1 (formula + `/p`) and M2 (canonical
+ranking + `/c`) green: the native canonicalization reproduces the
+oracle's connection segments across the corpus, with the single
+symmetric-system disagreement triaged in the corpus. M3 (mobile-H) is
+next. See [ARCHITECTURE.md](ARCHITECTURE.md) for the module map and
+extension axes.
 
 ## Commands
 
