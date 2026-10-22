@@ -12,10 +12,17 @@
 use super::partition::Partition;
 use super::table::ConnectionTable;
 
-/// Final canonical rank (1-based) per atom.
-pub fn canonical_ranks(adjacency: &[Vec<usize>], invariants: &[(u16, u16)]) -> Vec<u32> {
+/// Final canonical rank (1-based) per atom. `hydrogens` breaks the
+/// ties connectivity cannot: among table-equal terminals the one
+/// whose hydrogen counts sort lower wins (the corpus reading of the
+/// reference's layered table comparison).
+pub fn canonical_ranks(
+    adjacency: &[Vec<usize>],
+    invariants: &[(u16, u16)],
+    hydrogens: &[u32],
+) -> Vec<u32> {
     let n = adjacency.len();
-    let first = search_once(adjacency, invariants);
+    let first = search_once(adjacency, invariants, hydrogens);
     let mut renumbered = vec![Vec::new(); n];
     for atom in 0..n {
         renumbered[first.rank_of(atom) as usize - 1] = adjacency[atom]
@@ -28,35 +35,63 @@ pub fn canonical_ranks(adjacency: &[Vec<usize>], invariants: &[(u16, u16)]) -> V
         .iter()
         .map(|&atom| invariants[atom])
         .collect();
-    let second = search_once(&renumbered, &reordered);
+    let reordered_hydrogens: Vec<u32> = first
+        .at_number()
+        .iter()
+        .map(|&atom| hydrogens[atom])
+        .collect();
+    let second = search_once(&renumbered, &reordered, &reordered_hydrogens);
     (0..n)
         .map(|atom| second.rank_of(first.rank_of(atom) as usize - 1))
         .collect()
 }
 
 /// The connection table over the final numbering.
-pub fn canonical_table(adjacency: &[Vec<usize>], invariants: &[(u16, u16)]) -> ConnectionTable {
-    let ranks = canonical_ranks(adjacency, invariants);
+pub fn canonical_table(
+    adjacency: &[Vec<usize>],
+    invariants: &[(u16, u16)],
+    hydrogens: &[u32],
+) -> ConnectionTable {
+    let ranks = canonical_ranks(adjacency, invariants, hydrogens);
     ConnectionTable::build(&ranks, adjacency)
 }
 
-fn search_once(adjacency: &[Vec<usize>], invariants: &[(u16, u16)]) -> Partition {
+fn search_once(
+    adjacency: &[Vec<usize>],
+    invariants: &[(u16, u16)],
+    hydrogens: &[u32],
+) -> Partition {
     let mut root = Partition::initial(invariants);
     root.refine(adjacency);
     let mut best: Option<Partition> = None;
-    descend(&root, adjacency, &mut best);
+    descend(&root, adjacency, hydrogens, &mut best);
     best.expect("a discrete partition is always reached")
 }
 
-fn descend(partition: &Partition, adjacency: &[Vec<usize>], best: &mut Option<Partition>) {
+fn descend(
+    partition: &Partition,
+    adjacency: &[Vec<usize>],
+    hydrogens: &[u32],
+    best: &mut Option<Partition>,
+) {
     match partition.first_nonsingleton_cell() {
         None => {
+            let ranks = partition.ranks();
+            let counts = |partition: &Partition| -> Vec<u32> {
+                (0..adjacency.len())
+                    .map(|atom| hydrogens[partition.at_number()[atom]])
+                    .collect()
+            };
             let better = match &best {
                 None => true,
                 Some(best_partition) => {
-                    let table = ConnectionTable::build(partition.ranks(), adjacency);
+                    let table = ConnectionTable::build(ranks, adjacency);
                     let best_table = ConnectionTable::build(best_partition.ranks(), adjacency);
-                    table.compare(&best_table) == std::cmp::Ordering::Greater
+                    match table.compare(&best_table) {
+                        std::cmp::Ordering::Greater => true,
+                        std::cmp::Ordering::Equal => counts(partition) < counts(best_partition),
+                        _ => false,
+                    }
                 }
             };
             if better {
@@ -68,7 +103,7 @@ fn descend(partition: &Partition, adjacency: &[Vec<usize>], best: &mut Option<Pa
                 let v = partition.at_number()[position];
                 let mut branch = partition.clone();
                 branch.individualize(adjacency, v);
-                descend(&branch, adjacency, best);
+                descend(&branch, adjacency, hydrogens, best);
             }
         }
     }
@@ -88,7 +123,8 @@ mod tests {
         }
         let elements: Vec<String> = elements.iter().map(|s| s.to_string()).collect();
         let invariants = atom_invariants(&elements, &adjacency);
-        canonical_ranks(&adjacency, &invariants)
+        let hydrogens = vec![0u32; elements.len()];
+        canonical_ranks(&adjacency, &invariants, &hydrogens)
     }
 
     fn table_of(elements: &[&str], bonds: &[(usize, usize)]) -> Vec<u32> {
@@ -100,7 +136,10 @@ mod tests {
         }
         let elements: Vec<String> = elements.iter().map(|s| s.to_string()).collect();
         let invariants = atom_invariants(&elements, &adjacency);
-        canonical_table(&adjacency, &invariants).entries().to_vec()
+        let hydrogens = vec![0u32; elements.len()];
+        canonical_table(&adjacency, &invariants, &hydrogens)
+            .entries()
+            .to_vec()
     }
 
     #[test]

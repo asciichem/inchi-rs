@@ -122,7 +122,7 @@ mod tests {
     #[test]
     fn water_assembles_from_the_registered_layers() {
         let engine = Engine::from_molfile(WATER).expect("parses");
-        assert_eq!(engine.inchi_string().unwrap(), "InChI=1S/H2O");
+        assert_eq!(engine.inchi_string().unwrap(), "InChI=1S/H2O/h1H2");
     }
 
     #[test]

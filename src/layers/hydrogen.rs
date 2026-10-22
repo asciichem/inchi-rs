@@ -1,0 +1,180 @@
+//! The `/h` layer: attached hydrogens per canonical rank, grouped by
+//! count — ranks ascending within a group, consecutive runs as
+//! ranges, counts ascending across groups (the oracle's layout, e.g.
+//! `h2H,1H3`). Counts are the ±1-standardized ones, so an anionic O
+//! shows the mobile H its `/p−1` accounts for.
+
+use crate::error::Result;
+use crate::graph::Structure;
+use crate::layers::standardization;
+use crate::layers::{order, LayerEmitter};
+
+pub struct HydrogenLayer;
+
+impl LayerEmitter for HydrogenLayer {
+    fn name(&self) -> &'static str {
+        "hydrogen"
+    }
+
+    fn order(&self) -> u8 {
+        order::H
+    }
+
+    fn segment_kind(&self) -> Option<char> {
+        Some('h')
+    }
+
+    fn emit(&self, structure: &Structure) -> Result<Option<String>> {
+        standardization::ensure_within_m1(structure)?;
+        let counts = standardization::adjusted_hydrogens(structure);
+        let (adjacency, invariants) = crate::canonical::graph_of(structure);
+        let ranks = crate::canonical::canonical_ranks(&adjacency, &invariants, &counts);
+        let mut by_rank = vec![0u32; counts.len()];
+        for (atom, count) in counts.iter().enumerate() {
+            by_rank[ranks[atom] as usize - 1] = *count;
+        }
+        // The segment is the full InChI text: the letter rides along,
+        // exactly like `p+1` and `c1-2...`.
+        Ok(hydrogen_segment(&by_rank).map(|segment| format!("h{segment}")))
+    }
+}
+
+fn hydrogen_segment(counts: &[u32]) -> Option<String> {
+    let largest = counts.iter().copied().max()?;
+    if largest == 0 {
+        return None;
+    }
+    let mut segment = String::new();
+    for count in 1..=largest {
+        // by_rank is indexed by rank - 1; the segment speaks ranks.
+        let ranks: Vec<u32> = (0..counts.len())
+            .filter(|&atom| counts[atom] == count)
+            .map(|atom| atom as u32 + 1)
+            .collect();
+        if ranks.is_empty() {
+            continue;
+        }
+        if !segment.is_empty() {
+            segment.push(',');
+        }
+        push_runs(&ranks, &mut segment);
+        segment.push('H');
+        if count > 1 {
+            segment.push_str(&count.to_string());
+        }
+    }
+    Some(segment)
+}
+
+fn push_runs(ranks: &[u32], out: &mut String) {
+    let mut index = 0;
+    while index < ranks.len() {
+        let start = ranks[index];
+        let mut end = start;
+        while index + 1 < ranks.len() && ranks[index + 1] == end + 1 {
+            index += 1;
+            end = ranks[index];
+        }
+        if start == end {
+            out.push_str(&start.to_string());
+        } else {
+            out.push_str(&format!("{start}-{end}"));
+        }
+        index += 1;
+        if index < ranks.len() {
+            out.push(',');
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::graph::AtomRecord;
+    use crate::layers::LayerEmitter;
+
+    fn atom(element: &str, h_count: u32, charge: i32) -> AtomRecord {
+        AtomRecord {
+            element: element.to_string(),
+            h_count,
+            charge,
+        }
+    }
+
+    fn structure(atoms: Vec<AtomRecord>, bonds: Vec<(usize, usize, u32)>) -> Structure {
+        Structure { atoms, bonds }
+    }
+
+    #[test]
+    fn runs_and_counts_format_like_the_oracle() {
+        // by_rank inputs (rank r at index r-1): benzene is h1-6H;
+        // acetaldehyde is h2H,1H3 (counts ascending).
+        assert_eq!(hydrogen_segment(&[1, 1, 1, 1, 1, 1]).unwrap(), "1-6H");
+        assert_eq!(hydrogen_segment(&[3, 1]).unwrap(), "2H,1H3");
+        // Multiple runs in one count group (by_rank input).
+        assert_eq!(
+            hydrogen_segment(&[0, 1, 1, 0, 0, 0, 1, 1, 0, 1]).unwrap(),
+            "2-3,7-8,10H"
+        );
+        assert!(hydrogen_segment(&[0, 0]).is_none());
+    }
+
+    #[test]
+    fn the_standardized_hydrogen_shows_in_the_segment() {
+        // Acetate: the anionic O carries the mobile H (h4H,1H3).
+        let mut o_anion = atom("O", 0, -1);
+        let mut o_carbonyl = atom("O", 0, 0);
+        o_anion.h_count = 0;
+        o_carbonyl.h_count = 0;
+        let s = structure(
+            vec![atom("C", 0, 0), atom("C", 0, 0), o_carbonyl, o_anion],
+            vec![(0, 1, 1), (1, 2, 2), (1, 3, 1)],
+        );
+        // Canonical ranks: methyl=1, carbonyl C=2, O=3, O-=4 — the
+        // oracle records h4H,1H3 for acetate.
+        assert_eq!(HydrogenLayer.emit(&s).unwrap().as_deref(), Some("h4H,1H3"));
+    }
+
+    #[test]
+    fn hydrogen_counts_break_connectivity_ties_like_the_oracle() {
+        // The 2-methylbutadiene skeleton: the methyl and the two CH2s
+        // are connectivity-ambiguous; the oracle numbers the CH2s
+        // first (h4H,1-2H2,3H3).
+        let s = structure(
+            vec![
+                atom("C", 0, 0),
+                atom("C", 0, 0),
+                atom("C", 0, 0),
+                atom("C", 0, 0),
+                atom("C", 0, 0),
+            ],
+            vec![(0, 1, 1), (1, 2, 2), (3, 4, 2), (1, 3, 1)],
+        );
+        assert_eq!(
+            HydrogenLayer.emit(&s).unwrap().as_deref(),
+            Some("h4H,1-2H2,3H3")
+        );
+    }
+
+    #[test]
+    fn ammonium_loses_one_hydrogen() {
+        let s = structure(vec![atom("N", 4, 1)], vec![]);
+        assert_eq!(HydrogenLayer.emit(&s).unwrap().as_deref(), Some("h1H3"));
+    }
+
+    #[test]
+    fn quaternary_nitrogen_keeps_zero() {
+        let s = structure(
+            vec![
+                atom("N", 0, 1),
+                atom("C", 0, 0),
+                atom("C", 0, 0),
+                atom("C", 0, 0),
+            ],
+            vec![(0, 1, 1), (0, 2, 1), (0, 3, 1)],
+        );
+        let counts = standardization::adjusted_hydrogens(&s);
+        assert_eq!(counts[0], 0);
+        assert_eq!(counts[1..], vec![3, 3, 3]);
+    }
+}

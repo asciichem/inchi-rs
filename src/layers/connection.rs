@@ -25,7 +25,7 @@ impl LayerEmitter for ConnectionLayer {
             return Ok(None);
         }
         let (adjacency, invariants) = canonical::graph_of(structure);
-        let table = canonical::canonical_table(&adjacency, &invariants);
+        let table = canonical::canonical_table(&adjacency, &invariants, &structure.hydrogens());
         Ok(canonical::connection_segment(&table).map(|segment| format!("c{segment}")))
     }
 }
