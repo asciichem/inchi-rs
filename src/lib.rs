@@ -3,9 +3,13 @@
 //!
 //! Architecture: an [`Engine`] façade over encapsulated concerns —
 //! `molfile` reads the input edge, `graph` owns molecular-graph
-//! semantics, and `layers` holds one emitter per InChI layer
-//! (open for extension, closed for modification).
+//! semantics, `canonical` owns canonical ranking, and `layers` holds
+//! one emitter per InChI layer (open for extension, closed for
+//! modification).
 
+#![forbid(unsafe_code)]
+
+pub mod canonical;
 pub mod engine;
 mod error;
 pub mod graph;

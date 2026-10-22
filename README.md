@@ -19,6 +19,7 @@ for the module map and extension axes.
 
 ```sh
 INCHI_TESTS=/path/to/inchi-tests cargo test   # unit tests + oracle gate
+INCHI_TESTS=/path/to/inchi-tests cargo run --example refinement-census
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 ```
