@@ -1,6 +1,7 @@
-//! Refinement census over the oracle corpus: how often does invariant
-//! refinement already produce a total order (no individualization
-//! needed), and how large are the symmetric classes that remain?
+//! Refinement census over the oracle corpus: how often does the
+//! equitable refinement already produce a total order (no
+//! individualization needed), and how large are the symmetric cells
+//! that remain?
 //!
 //! Run with INCHI_TESTS pointing at an inchi-tests checkout:
 //!   cargo run --example refinement-census
@@ -8,7 +9,7 @@
 use std::fs;
 use std::path::PathBuf;
 
-use inchi_rs::canonical::{refine, DefaultInvariants};
+use inchi_rs::canonical::equitable_partition;
 
 fn main() {
     let dir = std::env::var("INCHI_TESTS")
@@ -29,7 +30,7 @@ fn main() {
     let mut atoms = 0usize;
     let mut discrete = 0usize;
     let mut symmetric = 0usize;
-    let mut largest_class = 0usize;
+    let mut largest_cell = 0usize;
     let mut hist = std::collections::BTreeMap::<usize, usize>::new();
 
     for file in files {
@@ -39,25 +40,26 @@ fn main() {
         for case in parsed {
             let molfile = case["molfile"].as_str().expect("molfile");
             let structure = inchi_rs::parse_molfile(molfile).expect("parses");
-            let classes = refine(&structure, &DefaultInvariants);
+            let partition = equitable_partition(&structure);
             cases += 1;
-            atoms += classes.ids().len();
-            *hist.entry(classes.count()).or_insert(0) += 1;
-            if classes.is_discrete() {
+            atoms += partition.at_number().len();
+            *hist.entry(partition.cell_count()).or_insert(0) += 1;
+            if partition.is_discrete() {
                 discrete += 1;
             } else {
                 symmetric += 1;
-                let mut sizes = vec![0usize; classes.count()];
-                for &id in classes.ids() {
-                    sizes[id] += 1;
+                let n = partition.at_number().len();
+                let mut sizes = vec![0usize; n + 1];
+                for position in 0..n {
+                    sizes[partition.rank_of(partition.at_number()[position]) as usize] += 1;
                 }
-                largest_class = largest_class.max(sizes.into_iter().max().unwrap_or(0));
+                largest_cell = largest_cell.max(sizes.into_iter().max().unwrap_or(0));
             }
         }
     }
 
     println!("fixtures: {cases} ({atoms} heavy atoms)");
     println!("discrete: {discrete}");
-    println!("symmetric: {symmetric} (largest non-singleton class: {largest_class})");
-    println!("classes-per-fixture histogram: {hist:?}");
+    println!("symmetric: {symmetric} (largest non-singleton cell: {largest_cell})");
+    println!("cells-per-fixture histogram: {hist:?}");
 }

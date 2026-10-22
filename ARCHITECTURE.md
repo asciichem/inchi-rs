@@ -34,7 +34,7 @@ exactly the layers it can decide.
 | `graph` | `Structure` / `AtomRecord`, bond orders, valences, implicit-H and composition semantics. Graph queries (bond-order sums, per-atom H) are graph concerns, not layer concerns. | New element/valence data lands in one table. |
 | `layers` | One module per InChI layer; the `LayerEmitter` trait is the OCP seam: `name()`, `segment_kind()` (None = formula, Some('p')…), `emit(&Structure) -> Option<String>`. | A new layer = a new module + one registration in `default_layers()`. |
 | `layers::standardization` | The ±1 proton rules decoded from the oracle (anion/cation proton accounting) — shared by the layers the rules couple (formula adjusts H, proton emits /p). One home, no duplication. | M3 replaces its arithmetic with full mobile-H rules. |
-| `canonical` (M2) | Heavy-atom graph, invariant construction, iterative refinement, canonical ranking, /c emission. | Invariant schemes and ranking strategies are traits; the oracle corpus arbitrates. |
+| `canonical` (M2) | Native port of the reference's base canonicalization path (MIT source read at development time, never compiled or called): invariants → partition → equitable refinement → two-pass individualization search → connection table → `/c` DFS emission. | Invariants and the table comparison are the corpus-arbitrated seams; M3 adds t-group nodes to the same partition machinery. |
 | `engine` | The façade: `Engine::from_molfile`, `segments()` — runs the registry, tags segments by kind. Closed for modification. | — |
 
 ## Encapsulation boundaries
