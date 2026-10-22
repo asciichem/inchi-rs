@@ -10,12 +10,14 @@ at `v0.1.0`. The corpus is recorded from IUPAC `inchi-1` (MIT) at
 development time; the IUPAC binary is a test oracle only and is never
 shipped or executed by this engine.
 
-Status: M0 (repo, reader, gate), M1 (formula + `/p`) and M2 (canonical
-ranking + `/c`) green: the native canonicalization reproduces the
-oracle's connection segments across the corpus, with the single
-symmetric-system disagreement triaged in the corpus. M3 (mobile-H) is
-next. See [ARCHITECTURE.md](ARCHITECTURE.md) for the module map and
-extension axes.
+Status: M0-M2 green (formula, `/p`, canonical ranking + `/c`), and M3
+slice 1 landed: the `/h` layer emits ±1-standardized attached
+hydrogens over the tautomer-free corpus slice, with a corpus-derived
+minimum-hydrogen tie-break at table-equal terminals. Remaining M3
+scope: mobile-H groups (`(H,x,y)`) and the orbit-representative
+disagreements triaged in the corpus (v0.1.2). See
+[ARCHITECTURE.md](ARCHITECTURE.md) for the module map and extension
+axes.
 
 ## Commands
 

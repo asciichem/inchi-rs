@@ -71,3 +71,45 @@ fn cation_carries_hydrogen(structure: &Structure) -> bool {
         atom.charge > 0 && (atom.h_count > 0 || (valence(&atom.element) - sum).max(0.0) > 0.0)
     })
 }
+
+/// The hydrogen count per atom with the ±1 standardization applied at
+/// its site: an anionic O/N gains the mobile H, a proton-carrying
+/// cation loses one. The `/h` layer reads these; the formula layer's
+/// total is their sum.
+pub fn adjusted_hydrogens(structure: &Structure) -> Vec<u32> {
+    let mut counts = structure.hydrogens();
+    match structure.total_charge() {
+        -1 if hetero_anion(structure) => {
+            if let Some(index) = first_charged_heteroatom(structure) {
+                counts[index] += 1;
+            }
+        }
+        1 if cation_carries_hydrogen(structure) => {
+            if let Some(index) = first_cation_site(structure) {
+                counts[index] = counts[index].saturating_sub(1);
+            }
+        }
+        _ => {}
+    }
+    counts
+}
+
+fn first_charged_heteroatom(structure: &Structure) -> Option<usize> {
+    structure
+        .atoms
+        .iter()
+        .position(|atom| atom.charge < 0 && (atom.element == "O" || atom.element == "N"))
+}
+
+fn first_cation_site(structure: &Structure) -> Option<usize> {
+    let sums = structure.bond_order_sums();
+    structure
+        .atoms
+        .iter()
+        .enumerate()
+        .find_map(|(index, atom)| {
+            let carries = atom.charge > 0
+                && (atom.h_count > 0 || (valence(&atom.element) - sums[index]).max(0.0) > 0.0);
+            carries.then_some(index)
+        })
+}

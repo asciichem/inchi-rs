@@ -155,7 +155,8 @@ mod tests {
         }
         let elements: Vec<String> = elements.iter().map(|s| s.to_string()).collect();
         let invariants = atom_invariants(&elements, &adjacency);
-        let table = canonical_table(&adjacency, &invariants);
+        let hydrogens = vec![0u32; elements.len()];
+        let table = canonical_table(&adjacency, &invariants, &hydrogens);
         connection_segment(&table).expect("segment")
     }
 

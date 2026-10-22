@@ -6,6 +6,7 @@
 
 pub mod connection;
 pub mod formula;
+pub mod hydrogen;
 pub mod proton;
 pub mod standardization;
 
@@ -60,6 +61,7 @@ pub fn default_layers() -> Vec<Box<dyn LayerEmitter>> {
     vec![
         Box::new(formula::FormulaLayer),
         Box::new(connection::ConnectionLayer),
+        Box::new(hydrogen::HydrogenLayer),
         Box::new(proton::ProtonLayer),
     ]
 }
