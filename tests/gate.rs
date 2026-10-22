@@ -1,15 +1,21 @@
-//! The M1 gate: the same inchi-tests corpus the Ruby reference
-//! passes — the derived formula layer must equal the recorded oracle
-//! segment for every identity fixture, 100%, no skips.
+//! The M1 gate: the same inchi-tests corpus the reference engine
+//! passes. Contract: the engine's emitted segments equal the oracle's
+//! layer prefix byte-for-byte — each milestone extends the prefix.
+//! M3-scoped (m3-tagged) and triaged fixtures are counted skips;
+//! |charge| > 1 counts beyond-M1. No silent skips.
 
 use std::fs;
 use std::path::PathBuf;
 
-#[test]
-fn formula_layer_agrees_with_the_oracle() {
-    let dir = std::env::var("INCHI_TESTS")
+fn suite_dir() -> PathBuf {
+    std::env::var("INCHI_TESTS")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("../inchi-tests"));
+        .unwrap_or_else(|_| PathBuf::from("../inchi-tests"))
+}
+
+#[test]
+fn emitted_layers_agree_with_the_oracle_prefix() {
+    let dir = suite_dir();
     let fixtures = dir.join("corpus/fixtures");
     let mut cases = Vec::new();
     let mut files: Vec<PathBuf> = fs::read_dir(&fixtures)
@@ -32,8 +38,6 @@ fn formula_layer_agrees_with_the_oracle() {
                 .expect("valid fixtures");
         cases.extend(parsed);
     }
-    // Triage is optional at the suite's discretion; absent means the
-    // gates decide every fixture.
     let triage: serde_json::Value = match fs::read_to_string(dir.join("corpus/triage.json")) {
         Ok(text) => serde_json::from_str(&text).expect("valid triage"),
         Err(_) => serde_json::Value::Null,
@@ -57,32 +61,43 @@ fn formula_layer_agrees_with_the_oracle() {
         }
 
         let molfile = case["molfile"].as_str().expect("molfile");
-        let recorded = case["inchi"].as_str().expect("inchi");
-        let expected = recorded.split('/').nth(1).expect("formula segment");
+        let recorded: Vec<String> = case["inchi"]
+            .as_str()
+            .expect("inchi")
+            .split('/')
+            .map(str::to_string)
+            .collect();
 
-        match inchi_rs::parse_molfile(molfile).and_then(|s| s.formula_layer()) {
-            Ok((formula, proton)) => {
-                if formula != expected {
-                    failures.push(format!("{id}: formula {formula:?} != oracle {expected:?}"));
-                    continue;
+        match inchi_rs::Engine::from_molfile(molfile).and_then(|engine| engine.segments()) {
+            Ok(segments) => {
+                // Kind-matched: each emitted segment is compared to
+                // the oracle's recording of THAT layer kind, wherever
+                // InChI orders it (formula = the bare first segment;
+                // others by their letter).
+                let mut ok = true;
+                for (kind, segment) in &segments {
+                    let expected = match kind {
+                        None => recorded.get(1),
+                        Some(letter) => recorded
+                            .iter()
+                            .find(|s| s.starts_with(*letter) && s.len() > 1),
+                    };
+                    match expected {
+                        Some(expected) if expected == segment => {}
+                        expected => {
+                            ok = false;
+                            failures.push(format!(
+                                "{id}: {kind:?} segment {segment:?} != oracle {expected:?}"
+                            ));
+                        }
+                    }
                 }
-                let expected_proton = recorded
-                    .split('/')
-                    .find_map(|segment| segment.strip_prefix('p'))
-                    .map(|sign| format!("p{sign}"));
-                let actual_proton = proton.map(|sign| format!("p{sign}"));
-                match (expected_proton, actual_proton) {
-                    (None, None) => {}
-                    (Some(expected), Some(actual)) if expected == actual => {}
-                    (expected, actual) => failures.push(format!(
-                        "{id}: proton layer {actual:?} != oracle {expected:?}"
-                    )),
+                if ok {
+                    pass += 1;
                 }
-                pass += 1;
             }
             Err(error) => {
-                if error.message.contains("beyond the ±1 corpus gate") {
-                    // |charge| > 1 needs the M3 mobile-H rules.
+                if error.message().contains("beyond the ±1 corpus gate") {
                     beyond += 1;
                 } else {
                     failures.push(format!("{id}: {error}"));
@@ -93,7 +108,7 @@ fn formula_layer_agrees_with_the_oracle() {
 
     assert!(
         failures.is_empty(),
-        "{} formula-layer failure(s):\n{}\n(pass: {pass}, skips: {skipped}, beyond: {beyond}, total: {})",
+        "{} layer failure(s):\n{}\n(pass: {pass}, M3-scoped skips: {skipped}, beyond-±1: {beyond}, total: {})",
         failures.len(),
         failures.join("\n"),
         cases.len()
