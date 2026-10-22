@@ -32,10 +32,12 @@ fn formula_layer_agrees_with_the_oracle() {
                 .expect("valid fixtures");
         cases.extend(parsed);
     }
-    let triage: serde_json::Value = serde_json::from_str(
-        &fs::read_to_string(dir.join("corpus/triage.json")).expect("triage file"),
-    )
-    .expect("valid triage");
+    // Triage is optional at the suite's discretion; absent means the
+    // gates decide every fixture.
+    let triage: serde_json::Value = match fs::read_to_string(dir.join("corpus/triage.json")) {
+        Ok(text) => serde_json::from_str(&text).expect("valid triage"),
+        Err(_) => serde_json::Value::Null,
+    };
 
     let mut pass = 0;
     let mut skipped = 0;
@@ -48,7 +50,7 @@ fn formula_layer_agrees_with_the_oracle() {
             .and_then(|tags| tags.as_array())
             .map(|tags| tags.iter().any(|t| t.as_str() == Some("m3")))
             .unwrap_or(false);
-        let triaged = triage.get(id).is_some();
+        let triaged = triage.get(id).map(|_| ()).is_some();
         if m3 || triaged {
             skipped += 1;
             continue;
