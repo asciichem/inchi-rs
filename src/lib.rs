@@ -203,26 +203,39 @@ impl Structure {
         Ok(map.into_iter().collect())
     }
 
-    /// The `/formula` layer plus the ±1 proton standardization the
-    /// charged corpus cases carry: an anion is recorded as its
-    /// neutral parent with one MORE hydrogen (`/p-1`), a cation with
-    /// one LESS (`/p+1`). Proton layers are signed strings.
+    /// The `/formula` layer with the oracle's M1-visible
+    /// standardization (decoded empirically, mirrored from the
+    /// reference engine):
+    ///   - anions: the charge's hydrogen comes back as mobile H
+    ///     (`/p-1`) when the charge sits on O/N (acetate -> acetic
+    ///     acid's C2H4O2/p-1); a carbanion keeps its composition;
+    ///   - cations: proton-carrying ones lose one H (ammonium ->
+    ///     H3N/p+1, a protonated amine loses one); bond-charged ones
+    ///     (quaternary N) keep their composition with no /p layer.
     pub fn formula_layer(&self) -> Result<(String, Option<String>)> {
         let mut composition = self.composition()?;
         let charge = self.total_charge();
         let proton = match charge {
             0 => None,
             -1 => {
-                add_hydrogen(&mut composition, 1);
-                Some("-1".to_string())
+                let hetero_anion = self
+                    .atoms
+                    .iter()
+                    .any(|a| a.charge < 0 && (a.element == "O" || a.element == "N"));
+                if hetero_anion {
+                    add_hydrogen(&mut composition, 1);
+                    Some("-1".to_string())
+                } else {
+                    None
+                }
             }
             1 => {
-                let has_h = composition.iter().any(|(e, c)| e == "H" && *c > 0);
-                if !has_h {
-                    return err("cation without hydrogen to standardize");
+                if self.cation_carries_hydrogen() {
+                    add_hydrogen(&mut composition, -1);
+                    Some("+1".to_string())
+                } else {
+                    None
                 }
-                add_hydrogen(&mut composition, -1);
-                Some("+1".to_string())
             }
             other => {
                 return err(format!(
@@ -231,6 +244,27 @@ impl Structure {
             }
         };
         Ok((hill_string(&composition), proton))
+    }
+
+    /// Does any cationic atom carry hydrogen (explicit code or
+    /// valence-gap)? Proton-carrying cations standardize by losing
+    /// one proton; H-less bond-charged cations keep everything.
+    fn cation_carries_hydrogen(&self) -> bool {
+        let mut sums = vec![0.0; self.atoms.len()];
+        for &(from, to, kind) in &self.bond_types {
+            let order = bond_order(kind);
+            sums[from] += order;
+            sums[to] += order;
+        }
+        self.atoms.iter().zip(&sums).any(|(atom, sum)| {
+            if atom.charge <= 0 {
+                return false;
+            }
+            if atom.h_count > 0 {
+                return true;
+            }
+            (valence(&atom.element) - sum).max(0.0) > 0.0
+        })
     }
 }
 
