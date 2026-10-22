@@ -67,7 +67,7 @@ impl Structure {
     /// code-0 atoms — a bare `O` line derives H2O). Anionic
     /// heteroatoms take zero: their standardization crosses the
     /// `/p` layer.
-    pub fn composition(&self) -> Result<Vec<(String, u32)>> {
+    pub fn composition(&self) -> Vec<(String, u32)> {
         use std::collections::BTreeMap;
         let sums = self.bond_order_sums();
         let mut map: BTreeMap<String, u32> = BTreeMap::new();
@@ -84,7 +84,7 @@ impl Structure {
                 *map.entry("H".to_string()).or_insert(0) += hydrogens;
             }
         }
-        Ok(map.into_iter().collect())
+        map.into_iter().collect()
     }
 
     pub fn element(&self, index: usize) -> Result<&str> {
@@ -92,5 +92,69 @@ impl Structure {
             || err(format!("atom index {index} out of range")),
             |a| Ok(a.element.as_str()),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn structure(atoms: Vec<AtomRecord>, bonds: Vec<(usize, usize, u32)>) -> Structure {
+        Structure { atoms, bonds }
+    }
+
+    fn atom(element: &str) -> AtomRecord {
+        AtomRecord {
+            element: element.to_string(),
+            h_count: 0,
+            charge: 0,
+        }
+    }
+
+    #[test]
+    fn bare_oxygen_composes_water_the_way_the_oracle_does() {
+        // A code-0 atom infers H from the valence gap: O with no
+        // bonds -> 2 H (recorded identity/breadth water is H2O).
+        let s = structure(vec![atom("O")], vec![]);
+        assert_eq!(s.composition(), vec![("H".into(), 2), ("O".into(), 1)]);
+    }
+
+    #[test]
+    fn mdl_hcount_codes_win_over_the_valence_gap() {
+        // Ammonium: code 5 -> 4 explicit H (recorded as H3N only
+        // after the proton standardization).
+        let mut n = atom("N");
+        n.h_count = 4;
+        n.charge = 1;
+        let s = structure(vec![n], vec![]);
+        assert_eq!(s.composition(), vec![("H".into(), 4), ("N".into(), 1)]);
+    }
+
+    #[test]
+    fn anionic_heteroatoms_take_no_implicit_hydrogen() {
+        // Acetate: the anionic O carries no H; the mobile H enters via
+        // the /p standardization, not here.
+        let mut o_anion = atom("O");
+        o_anion.charge = -1;
+        let s = structure(
+            vec![atom("C"), atom("C"), atom("O"), o_anion],
+            vec![(0, 1, 1), (1, 2, 2), (1, 3, 1)],
+        );
+        let composition = s.composition();
+        assert_eq!(
+            composition,
+            vec![("C".into(), 2), ("H".into(), 3), ("O".into(), 2)],
+            "acetate composition is C2H3O2 before standardization"
+        );
+    }
+
+    #[test]
+    fn aromatic_bonds_count_one_point_five() {
+        // Benzene: each C sees 1.5 + 1.5 = 3.0 -> one valence gap -> 1 H.
+        let atoms = (0..6).map(|_| atom("C")).collect();
+        let bonds = (0..6).map(|i| (i, (i + 1) % 6, 4)).collect();
+        let s = structure(atoms, bonds);
+        let composition = s.composition();
+        assert_eq!(composition, vec![("C".into(), 6), ("H".into(), 6)]);
     }
 }

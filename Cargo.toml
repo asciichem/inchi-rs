@@ -2,8 +2,8 @@
 name = "inchi-rs"
 version = "0.1.0"
 edition = "2021"
-description = "Rust InChI engine — passes the same inchi-tests suite as the reference"
-license = "BSD-2-Clause"
+description = "Native Rust InChI engine, gated by the shared inchi-tests oracle corpus"
+license = "MIT"
 repository = "https://github.com/asciichem/inchi-rs"
 
 [dependencies]

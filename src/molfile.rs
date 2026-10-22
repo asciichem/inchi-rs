@@ -109,3 +109,38 @@ fn bad_counts(line: &str) -> Error {
 fn bad(line: &str) -> Error {
     Error::new(format!("{CONTEXT}: malformed line: {line:?}"))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const WATER: &str = "water\n  AsciiChem\n\n  1  0  0  0  0  0  0  0  0  0999 V2000\n   12.0000   12.0000    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0  0\nM  END\n";
+
+    #[test]
+    fn reads_elements_hcounts_and_charges() {
+        let molfile = "ammonium\n  AsciiChem\n\n  1  0  0  0  0  0  0  0  0  0999 V2000\n   12.0000   12.0000    0.0000 N   0  0  0  5  0  0  0  0  0  0  0\nM  CHG  1   1   1\nM  END\n";
+        let structure = parse(molfile).expect("parses");
+        assert_eq!(structure.atoms[0].element, "N");
+        // MDL code 5 means 4 explicit hydrogens.
+        assert_eq!(structure.atoms[0].h_count, 4);
+        assert_eq!(structure.atoms[0].charge, 1);
+    }
+
+    #[test]
+    fn reads_bonds_as_zero_based_types() {
+        let molfile = "ethane\n  AsciiChem\n\n  2  1  0  0  0  0  0  0  0  0999 V2000\n   12.0000   12.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0  0\n   72.0000   12.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0  0\n  1  2  1  0  0  0  0  0  0  0  0\nM  END\n";
+        let structure = parse(molfile).expect("parses");
+        assert_eq!(structure.bonds, vec![(0, 1, 1)]);
+    }
+
+    #[test]
+    fn truncated_molfile_is_an_error_not_a_guess() {
+        assert!(parse("only a header\n").is_err());
+    }
+
+    #[test]
+    fn water_fixture_constant_parses() {
+        let structure = parse(WATER).expect("parses");
+        assert_eq!(structure.atoms[0].element, "O");
+    }
+}

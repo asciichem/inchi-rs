@@ -1,8 +1,8 @@
 //! Layer emitters — the engine's extension axis (OCP). Each InChI
-//! layer is its own module implementing [`Layer`]; the engine runs
-//! its registered layers without knowing any of their internals.
-//! Adding a layer (connection, mobile-H, stereo) is a new module
-//! plus one registration in [`default_layers`].
+//! layer is its own module implementing [`LayerEmitter`]; the engine
+//! runs its registered layers without knowing any of their internals.
+//! Adding a layer (connection, mobile-H, stereo) is a new module plus
+//! one registration in [`default_layers`].
 
 pub mod formula;
 pub mod proton;
@@ -11,9 +11,35 @@ pub mod standardization;
 use crate::error::Result;
 use crate::graph::Structure;
 
+/// InChI segment positions (standard InChI layer order). Registry
+/// order is irrelevant; the assembler sorts by these.
+pub mod order {
+    pub const FORMULA: u8 = 0;
+    pub const CONNECTION: u8 = 1;
+    pub const H: u8 = 2;
+    pub const Q: u8 = 3;
+    pub const P: u8 = 4;
+    pub const I: u8 = 5;
+    pub const O: u8 = 6;
+    pub const T: u8 = 7;
+    pub const B: u8 = 8;
+    pub const M: u8 = 9;
+    pub const S: u8 = 10;
+}
+
+/// The layer kinds a registered set must cover before the engine may
+/// assemble a full InChI string: a bare formula plus a connection
+/// layer is the minimum that identifies anything.
+pub const MANDATORY_KINDS: [Option<char>; 2] = [None, Some('c')];
+
 pub trait LayerEmitter {
     /// The layer's name.
     fn name(&self) -> &'static str;
+
+    /// The layer's position in the InChI segment order (see
+    /// [`order`]). Registry order is irrelevant; the assembler sorts
+    /// by this.
+    fn order(&self) -> u8;
 
     /// The layer's segment identifier in the InChI string: `None`
     /// for the formula layer (the bare segment right after
