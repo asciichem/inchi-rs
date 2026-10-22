@@ -14,11 +14,13 @@ jobs:
         with:
           repository: asciichem/inchi-tests
           path: .inchi-tests
+          ref: v0.1.0
       - run: echo "INCHI_TESTS=$(pwd)/.inchi-tests" >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --check
-      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo clippy --locked --all-targets -- -D warnings
       - name: M1 formula-layer gate against the oracle corpus
-        run: cargo test
+        run: cargo test --locked
