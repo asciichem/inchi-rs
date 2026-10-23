@@ -1,11 +1,10 @@
 //! The gate: the same inchi-tests corpus the reference engine passes.
 //! Contract: the engine's emitted segments equal the oracle's layer
 //! prefix byte-for-byte — each milestone extends the prefix.
-//! Mobile-H groups are gated live since M3 slice 2; counted skips are
-//! the m3-tagged and triaged fixtures (the tautomer-parity residue),
-//! structures containing S or P (the S/P valence model is its own
-//! pending slice), isotopic fixtures (/i), and |charge| > 1.
-//! No silent skips.
+//! Mobile-H groups and the m3-tagged S/P slice gate live since M3
+//! slice 2; counted skips are the triaged fixtures (dated,
+//! decoded-reason debts) and isotopic fixtures (/i). |charge| > 1
+//! counts beyond-M1. No silent skips.
 
 use std::fs;
 use std::path::PathBuf;
@@ -53,11 +52,6 @@ fn emitted_layers_agree_with_the_oracle_prefix() {
     let mut failures = Vec::new();
     for case in &cases {
         let id = case["id"].as_str().expect("id");
-        let m3 = case
-            .get("tags")
-            .and_then(|tags| tags.as_array())
-            .map(|tags| tags.iter().any(|t| t.as_str() == Some("m3")))
-            .unwrap_or(false);
         let triaged = triage.get(id).map(|_| ()).is_some();
         let recorded: Vec<String> = case["inchi"]
             .as_str()
@@ -65,17 +59,8 @@ fn emitted_layers_agree_with_the_oracle_prefix() {
             .split('/')
             .map(str::to_string)
             .collect();
-        let molfile_text = case["molfile"].as_str().expect("molfile");
-        let has_sp = ["S", "P"].iter().any(|symbol| {
-            molfile_text
-                .lines()
-                .skip(4)
-                .take_while(|line| !line.starts_with("M  END"))
-                .filter(|line| line.len() >= 34)
-                .any(|line| line[31..34].trim() == *symbol)
-        });
         let isotopic_scope = recorded.iter().any(|segment| segment.starts_with('i'));
-        if m3 || triaged || has_sp {
+        if triaged {
             skipped += 1;
             continue;
         }
