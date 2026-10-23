@@ -13,6 +13,7 @@
 //! — is the same without it, because pruned subtrees only ever hold
 //! tables equal to an already-found terminal.
 
+pub mod aromatic;
 pub mod emit;
 mod invariants;
 mod partition;

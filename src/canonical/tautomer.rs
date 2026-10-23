@@ -1,14 +1,15 @@
-//! Mobile-H (tautomer) detection — M3 slice 2. A group is a set of
-//! O/N endpoints linked through common neighbors where at least one
-//! endpoint-to-neighbor bond is a double bond (the 1,3-shift pattern:
-//! O=C-OH, amide O=C-NH, guanidine N-C(=N)-N); linked endpoints merge
-//! into one component (sulfuric-acid-like chains through S/P would
-//! qualify but S/P valence is its own pending model). A group's
+//! Mobile-H (tautomer) detection — M3. A group is a set of O/N
+//! endpoints linked through the documented 1,3 and 1,5 alternating
+//! single/double shift paths: the donor terminal of every single bond
+//! must be shift-capable (an attached H or a negative charge; a nitro
+//! nitrogen never donates — the aci form keeps its H fixed), and
+//! aromatic ring bonds match either parity, which is how the reference
+//! delocalizes a ring before applying its templates. A group's
 //! hydrogens are the ±1-standardized counts of its endpoints — the
 //! acetate O⁻'s mobile H arrives exactly this way.
 
 use crate::graph::Structure;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 
 /// One mobile-H group: the hydrogen count and the canonical ranks of
 /// its endpoints (ascending).
@@ -57,73 +58,109 @@ fn neighbors_of(structure: &Structure, atom: usize) -> Vec<(usize, u32)> {
         .collect()
 }
 
-#[allow(clippy::too_many_arguments)]
-fn walk(
-    structure: &Structure,
-    hydrogens: &[u32],
-    atom: usize,
-    start: usize,
-    parity: u32,
-    far_must_be_capable: bool,
-    remaining: usize,
-    linked: &mut Vec<BTreeSet<usize>>,
-) {
-    if remaining == 0 {
-        return;
-    }
-    for (next, kind) in neighbors_of(structure, atom) {
-        if kind != parity {
-            continue;
-        }
-        if remaining == 1 {
-            if next == start
-                || !is_endpoint(structure, next)
-                || (far_must_be_capable && !capable(structure, hydrogens, next))
-            {
-                continue;
-            }
-            linked[start].insert(next);
-            linked[next].insert(start);
-            continue;
-        }
-        if is_endpoint(structure, next) {
-            continue;
-        }
-        walk(
-            structure,
-            hydrogens,
-            next,
-            start,
-            if parity == 1 { 2 } else { 1 },
-            far_must_be_capable,
-            remaining - 1,
-            linked,
-        );
-    }
-}
-
 pub fn mobile_groups(structure: &Structure, hydrogens: &[u32], ranks: &[u32]) -> Vec<MobileGroup> {
     let n = structure.atoms.len();
-    // Linkage: X ~ Y when (a) some NON-endpoint atom Z bonds both and
-    // at least one of the two bonds is a double — the 1,3 shift — or
-    // (b) X and Y are directly double-bonded. Endpoints never anchor a
-    // 1,3 link: an NH2 beside a tautomeric N stays fixed (breadth-24).
+    let aromatic = crate::canonical::aromatic::aromatic_bonds(structure);
+    let bond_index: HashMap<(usize, usize), usize> = structure
+        .bonds
+        .iter()
+        .enumerate()
+        .map(|(index, &(from, to, _))| ((from.min(to), from.max(to)), index))
+        .collect();
+    let double_like = |a: usize, b: usize| -> bool {
+        bond_index
+            .get(&(a.min(b), a.max(b)))
+            .map(|&bond| structure.bonds[bond].2 == 2 || aromatic.contains(&bond))
+            .unwrap_or(false)
+    };
+
     let mut linked: Vec<BTreeSet<usize>> = vec![BTreeSet::new(); n];
+
+    // 1,3 pairs through a common neighbor: the single side must be
+    // shift-capable; the anchor may itself be an endpoint (the nitro
+    // anion's oxygens pair through their nitrogen).
+    for anchor in 0..n {
+        let ends: Vec<usize> = neighbors_of(structure, anchor)
+            .into_iter()
+            .filter(|&(atom, _)| is_endpoint(structure, atom))
+            .map(|(atom, _)| atom)
+            .collect();
+        for &x in &ends {
+            for &y in &ends {
+                if y == x {
+                    continue;
+                }
+                let xd = double_like(x, anchor);
+                let yd = double_like(y, anchor);
+                if (xd && (yd || capable(structure, hydrogens, y)))
+                    || (yd && capable(structure, hydrogens, x))
+                {
+                    linked[x].insert(y);
+                    linked[y].insert(x);
+                }
+            }
+        }
+    }
+
+    // 1,5 walks (donor-s-d-s-d from a capable donor, either
+    // direction); interior atoms may be endpoints.
     for start in 0..n {
         if !is_endpoint(structure, start) {
             continue;
         }
-        // The reference's two documented shifts, walked from either
-        // end: 1,3 (donor-s-d) and 1,5 (donor-s-d-s-d). The donor
-        // terminal must be shift-capable; the far terminal needs
-        // capability exactly when its own bond is single (the
-        // double-start walks); intermediates are never endpoints.
         if capable(structure, hydrogens, start) {
-            walk(structure, hydrogens, start, start, 1, false, 2, &mut linked);
-            walk(structure, hydrogens, start, start, 1, false, 4, &mut linked);
+            walk_path(
+                structure,
+                &bond_index,
+                &aromatic,
+                hydrogens,
+                start,
+                start,
+                1,
+                FarRequirement::None,
+                2,
+                &mut linked,
+            );
+            // The 1,5 template terminates on a double bond — a bare
+            // single-terminated acceptor is not one (phenol OH's stay
+            // fixed).
+            walk_path(
+                structure,
+                &bond_index,
+                &aromatic,
+                hydrogens,
+                start,
+                start,
+                1,
+                FarRequirement::Double,
+                4,
+                &mut linked,
+            );
         }
-        walk(structure, hydrogens, start, start, 2, true, 2, &mut linked);
-        walk(structure, hydrogens, start, start, 2, true, 4, &mut linked);
+        walk_path(
+            structure,
+            &bond_index,
+            &aromatic,
+            hydrogens,
+            start,
+            start,
+            2,
+            FarRequirement::Capable,
+            2,
+            &mut linked,
+        );
+        walk_path(
+            structure,
+            &bond_index,
+            &aromatic,
+            hydrogens,
+            start,
+            start,
+            2,
+            FarRequirement::Capable,
+            4,
+            &mut linked,
+        );
     }
 
     let mut component = vec![usize::MAX; n];
@@ -157,6 +194,74 @@ pub fn mobile_groups(structure: &Structure, hydrogens: &[u32], ranks: &[u32]) ->
     }
     groups.sort_by_key(|group| (group.ranks.len(), group.ranks[0]));
     groups
+}
+
+/// What the far terminal of a shift walk must look like.
+#[derive(Clone, Copy, PartialEq)]
+enum FarRequirement {
+    None,
+    Capable,
+    Double,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn walk_path(
+    structure: &Structure,
+    bond_index: &HashMap<(usize, usize), usize>,
+    aromatic: &BTreeSet<usize>,
+    hydrogens: &[u32],
+    atom: usize,
+    start: usize,
+    parity: u32,
+    far: FarRequirement,
+    remaining: usize,
+    linked: &mut Vec<BTreeSet<usize>>,
+) {
+    if remaining == 0 {
+        return;
+    }
+    for (next, kind) in neighbors_of(structure, atom) {
+        let key = (atom.min(next), atom.max(next));
+        let aromatic_bond = bond_index
+            .get(&key)
+            .map(|&bond| aromatic.contains(&bond))
+            .unwrap_or(false);
+        if kind != parity && !aromatic_bond {
+            continue;
+        }
+        if remaining == 1 {
+            let far_key = (atom.min(next), atom.max(next));
+            let far_double = bond_index
+                .get(&far_key)
+                .map(|&bond| structure.bonds[bond].2 == 2 || aromatic.contains(&bond))
+                .unwrap_or(false);
+            let accepted = match far {
+                FarRequirement::None => true,
+                FarRequirement::Capable => capable(structure, hydrogens, next),
+                FarRequirement::Double => {
+                    far_double || (kind != 2 && capable(structure, hydrogens, next))
+                }
+            };
+            if next == start || !is_endpoint(structure, next) || !accepted {
+                continue;
+            }
+            linked[start].insert(next);
+            linked[next].insert(start);
+            continue;
+        }
+        walk_path(
+            structure,
+            bond_index,
+            aromatic,
+            hydrogens,
+            next,
+            start,
+            if parity == 1 { 2 } else { 1 },
+            far,
+            remaining - 1,
+            linked,
+        );
+    }
 }
 
 /// The atoms whose hydrogens live in mobile groups (excluded from the
@@ -208,7 +313,6 @@ mod tests {
 
     #[test]
     fn alcohol_oxygen_is_not_an_endpoint() {
-        // Ethanol: no double bond anywhere, no group.
         let s = structure(
             vec![atom("C"), atom("C"), atom("O")],
             vec![(0, 1, 1), (1, 2, 1)],
@@ -231,12 +335,40 @@ mod tests {
     }
 
     #[test]
-    fn aromatic_bonds_do_not_anchor_groups() {
-        // Benzene carbons are not O/N endpoints anyway; an aromatic O
-        // (furan-like) must not group through a 1.5 bond.
-        let atoms = (0..5).map(|_| atom("C")).collect();
-        let mut s = structure(atoms, (0..5).map(|i| (i, (i + 1) % 5, 4)).collect());
-        s.atoms[0] = atom("O");
-        assert!(mobile_groups(&s, &[0, 0, 0, 0, 0], &[1, 2, 3, 4, 5]).is_empty());
+    fn the_nitro_anion_groups_its_oxygens_but_not_its_nitrogen() {
+        // CH3-N(=O)-O(-): the oracle records (H,3,4) over the two
+        // oxygens; the nitrogen's hydrogens stay fixed.
+        let s = structure(
+            vec![atom("C"), atom("N"), atom("O"), atom("O")],
+            vec![(0, 1, 1), (1, 2, 2), (1, 3, 1)],
+        );
+        let groups = mobile_groups(&s, &[3, 0, 0, 1], &[1, 2, 3, 4]);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].ranks, vec![3, 4]);
+    }
+
+    #[test]
+    fn aromatic_bonds_carry_the_shift_across_a_ring() {
+        // 2-hydroxypyridine skeleton: the OH oxygen and the ring N are
+        // tautomeric through the aromatic ring.
+        let mut atoms: Vec<AtomRecord> = (0..6).map(|_| atom("C")).collect();
+        atoms[0] = atom("N");
+        atoms.push(atom("O"));
+        let s = structure(
+            atoms,
+            vec![
+                (0, 1, 1), // ring N - C1
+                (1, 2, 2),
+                (2, 3, 1),
+                (3, 4, 2),
+                (4, 5, 1),
+                (5, 0, 2), // ring closes with a double to N
+                (1, 6, 1), // exocyclic OH on C1
+            ],
+        );
+        let groups = mobile_groups(&s, &[0, 0, 0, 0, 0, 0, 1], &[1, 2, 3, 4, 5, 6, 7]);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].count, 1);
+        assert_eq!(groups[0].ranks, vec![1, 7]);
     }
 }
