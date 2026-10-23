@@ -27,7 +27,9 @@ fn is_endpoint(structure: &Structure, hydrogens: &[u32], atom: usize) -> bool {
         // ether/sulfide single bond, which would drag sulfides into
         // every neighboring group.
         "S" => {
-            double_bonded(structure, atom) || hydrogens[atom] > 0 || structure.atoms[atom].charge < 0
+            double_bonded(structure, atom)
+                || hydrogens[atom] > 0
+                || structure.atoms[atom].charge < 0
         }
         _ => false,
     }
@@ -36,9 +38,9 @@ fn is_endpoint(structure: &Structure, hydrogens: &[u32], atom: usize) -> bool {
 /// A thiocarbonyl acceptor: =S off a carbon (the C=S of a
 /// thioamide/thioacid), not an S=O of a sulfone or sulfate.
 fn double_bonded(structure: &Structure, atom: usize) -> bool {
-    neighbors_of(structure, atom).into_iter().any(|(neighbor, kind)| {
-        kind == 2 && structure.atoms[neighbor].element == "C"
-    })
+    neighbors_of(structure, atom)
+        .into_iter()
+        .any(|(neighbor, kind)| kind == 2 && structure.atoms[neighbor].element == "C")
 }
 
 fn capable(structure: &Structure, hydrogens: &[u32], atom: usize) -> bool {
