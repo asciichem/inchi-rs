@@ -19,8 +19,26 @@ pub struct MobileGroup {
     pub ranks: Vec<u32>,
 }
 
-fn is_endpoint(structure: &Structure, atom: usize) -> bool {
-    matches!(structure.atoms[atom].element.as_str(), "O" | "N")
+fn is_endpoint(structure: &Structure, hydrogens: &[u32], atom: usize) -> bool {
+    match structure.atoms[atom].element.as_str() {
+        "O" | "N" => true,
+        // Sulfur participates only as a thioamide-style acceptor (=S)
+        // or a capable donor (S-H / thiolate) — never as an
+        // ether/sulfide single bond, which would drag sulfides into
+        // every neighboring group.
+        "S" => {
+            double_bonded(structure, atom) || hydrogens[atom] > 0 || structure.atoms[atom].charge < 0
+        }
+        _ => false,
+    }
+}
+
+/// A thiocarbonyl acceptor: =S off a carbon (the C=S of a
+/// thioamide/thioacid), not an S=O of a sulfone or sulfate.
+fn double_bonded(structure: &Structure, atom: usize) -> bool {
+    neighbors_of(structure, atom).into_iter().any(|(neighbor, kind)| {
+        kind == 2 && structure.atoms[neighbor].element == "C"
+    })
 }
 
 fn capable(structure: &Structure, hydrogens: &[u32], atom: usize) -> bool {
@@ -82,7 +100,7 @@ pub fn mobile_groups(structure: &Structure, hydrogens: &[u32], ranks: &[u32]) ->
     for anchor in 0..n {
         let ends: Vec<usize> = neighbors_of(structure, anchor)
             .into_iter()
-            .filter(|&(atom, _)| is_endpoint(structure, atom))
+            .filter(|&(atom, _)| is_endpoint(structure, hydrogens, atom))
             .map(|(atom, _)| atom)
             .collect();
         for &x in &ends {
@@ -105,7 +123,7 @@ pub fn mobile_groups(structure: &Structure, hydrogens: &[u32], ranks: &[u32]) ->
     // 1,5 walks (donor-s-d-s-d from a capable donor, either
     // direction); interior atoms may be endpoints.
     for start in 0..n {
-        if !is_endpoint(structure, start) {
+        if !is_endpoint(structure, hydrogens, start) {
             continue;
         }
         if capable(structure, hydrogens, start) {
@@ -166,7 +184,7 @@ pub fn mobile_groups(structure: &Structure, hydrogens: &[u32], ranks: &[u32]) ->
     let mut component = vec![usize::MAX; n];
     let mut groups = Vec::new();
     for start in 0..n {
-        if !is_endpoint(structure, start) || component[start] != usize::MAX {
+        if !is_endpoint(structure, hydrogens, start) || component[start] != usize::MAX {
             continue;
         }
         let mut members = Vec::new();
@@ -240,7 +258,7 @@ fn walk_path(
                 FarRequirement::Capable => capable(structure, hydrogens, next),
                 FarRequirement::Double => far_double,
             };
-            if next == start || !is_endpoint(structure, next) || !accepted {
+            if next == start || !is_endpoint(structure, hydrogens, next) || !accepted {
                 continue;
             }
             linked[start].insert(next);
