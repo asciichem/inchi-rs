@@ -47,12 +47,17 @@ fn emitted_layers_agree_with_the_oracle_prefix() {
 
     let mut pass = 0;
     let mut skipped = 0;
+    let mut retired = 0;
     let mut isotopic = 0;
     let mut beyond = 0;
     let mut failures = Vec::new();
+    let mut retirements = Vec::new();
     for case in &cases {
         let id = case["id"].as_str().expect("id");
-        let triaged = triage.get(id).map(|_| ()).is_some();
+        // Every fixture is compared; the triage file marks EXPECTED
+        // failures (dated, decoded debts). A triaged fixture that
+        // passes is a retirement to act on, never a silent skip.
+        let expected_failure = triage.get(id).map(|_| ()).is_some();
         let recorded: Vec<String> = case["inchi"]
             .as_str()
             .expect("inchi")
@@ -60,10 +65,6 @@ fn emitted_layers_agree_with_the_oracle_prefix() {
             .map(str::to_string)
             .collect();
         let isotopic_scope = recorded.iter().any(|segment| segment.starts_with('i'));
-        if triaged {
-            skipped += 1;
-            continue;
-        }
         if isotopic_scope {
             // Isotopes ride their own milestone (/i layer); the reader
             // also sees explicit D atoms as heavy ones until then.
@@ -80,6 +81,7 @@ fn emitted_layers_agree_with_the_oracle_prefix() {
                 // InChI orders it (formula = the bare first segment;
                 // others by their letter).
                 let mut ok = true;
+                let mut failures_now = Vec::new();
                 for (kind, segment) in &segments {
                     let expected = match kind {
                         None => recorded.get(1),
@@ -91,21 +93,34 @@ fn emitted_layers_agree_with_the_oracle_prefix() {
                         Some(expected) if expected == segment => {}
                         expected => {
                             ok = false;
-                            failures.push(format!(
-                                "{id}: {kind:?} segment {segment:?} != oracle {expected:?}"
+                            failures_now.push(format!(
+                                "{kind:?} segment {segment:?} != oracle {expected:?}"
                             ));
                         }
                     }
                 }
                 if ok {
-                    pass += 1;
+                    if expected_failure {
+                        retired += 1;
+                        retirements.push(id.to_string());
+                    } else {
+                        pass += 1;
+                    }
+                } else if !expected_failure {
+                    for line in &failures_now {
+                        failures.push(format!("{id}: {line}"));
+                    }
+                } else {
+                    skipped += 1;
                 }
             }
             Err(error) => {
                 if error.message().contains("beyond the ±1 corpus gate") {
                     beyond += 1;
-                } else {
+                } else if !expected_failure {
                     failures.push(format!("{id}: {error}"));
+                } else {
+                    skipped += 1;
                 }
             }
         }
@@ -113,10 +128,21 @@ fn emitted_layers_agree_with_the_oracle_prefix() {
 
     assert!(
         failures.is_empty(),
-        "{} layer failure(s):\n{}\n(pass: {pass}, M3-scoped skips: {skipped}, isotopic skips: \
+        "{} layer failure(s):\n{}\n(pass: {pass}, expected-failure skips: {skipped},          RETIRED (triaged, now passing — update the triage file): {retired}, isotopic skips: \
          {isotopic}, beyond-±1: {beyond}, total: {})",
         failures.len(),
         failures.join("\n"),
         cases.len()
+    );
+    println!(
+        "gate: pass {pass}, expected-failure skips {skipped}, retired {retired}, isotopic \
+         {isotopic}, beyond-±1 {beyond}, total {}",
+        cases.len()
+    );
+    assert!(
+        retirements.is_empty(),
+        "{} triaged fixture(s) now PASS — retire their triage entries:\n{}",
+        retirements.len(),
+        retirements.join("\n")
     );
 }

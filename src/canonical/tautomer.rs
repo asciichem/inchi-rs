@@ -238,9 +238,7 @@ fn walk_path(
             let accepted = match far {
                 FarRequirement::None => true,
                 FarRequirement::Capable => capable(structure, hydrogens, next),
-                FarRequirement::Double => {
-                    far_double || (kind != 2 && capable(structure, hydrogens, next))
-                }
+                FarRequirement::Double => far_double,
             };
             if next == start || !is_endpoint(structure, next) || !accepted {
                 continue;
