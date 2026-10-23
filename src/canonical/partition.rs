@@ -29,6 +29,24 @@ impl Partition {
         Partition { rank, at_number }
     }
 
+    /// The invariant-ordered partition over a pair-valued invariant
+    /// (the reference's auxiliary ranking input).
+    pub fn initial_pair(invariants: &[(u32, u32)]) -> Partition {
+        let n = invariants.len();
+        let mut at_number: Vec<usize> = (0..n).collect();
+        at_number.sort_by_key(|&i| (invariants[i], i));
+        let mut rank = vec![0u32; n];
+        let mut current = n as u32;
+        rank[at_number[n - 1]] = current;
+        for position in (1..n).rev() {
+            if invariants[at_number[position - 1]] != invariants[at_number[position]] {
+                current = position as u32;
+            }
+            rank[at_number[position - 1]] = current;
+        }
+        Partition { rank, at_number }
+    }
+
     /// Equitable refinement: tied atoms are ordered by their sorted
     /// neighbor-rank lists, and cells split at each difference.
     /// Repeats until the partition stops splitting.
