@@ -23,7 +23,22 @@ fn is_endpoint(structure: &Structure, atom: usize) -> bool {
 }
 
 fn capable(structure: &Structure, hydrogens: &[u32], atom: usize) -> bool {
+    if is_nitro_nitrogen(structure, atom) {
+        // A nitro nitrogen's hydrogens stay fixed (the oracle's aci
+        // form keeps them out of the mobile group).
+        return false;
+    }
     hydrogens[atom] > 0 || structure.atoms[atom].charge < 0
+}
+
+/// An N bonded to two or more O — the nitro situation.
+fn is_nitro_nitrogen(structure: &Structure, atom: usize) -> bool {
+    structure.atoms[atom].element == "N"
+        && neighbors_of(structure, atom)
+            .into_iter()
+            .filter(|&(neighbor, _)| structure.atoms[neighbor].element == "O")
+            .count()
+            >= 2
 }
 
 fn neighbors_of(structure: &Structure, atom: usize) -> Vec<(usize, u32)> {
