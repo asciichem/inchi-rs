@@ -43,7 +43,7 @@ pub fn aromatic_bonds(structure: &Structure) -> BTreeSet<usize> {
             for position in 0..cycle.len() {
                 let a = cycle[position];
                 let b = cycle[(position + 1) % cycle.len()];
-                if let Some(&(bond, _)) = neighbors[a].iter().find(|&&(neighbor, _)| neighbor == b)
+                if let Some(&(_, bond)) = neighbors[a].iter().find(|&&(neighbor, _)| neighbor == b)
                 {
                     aromatic.insert(bond);
                 }

@@ -28,7 +28,12 @@ impl LayerEmitter for HydrogenLayer {
         standardization::ensure_within_m1(structure)?;
         let counts = standardization::adjusted_hydrogens(structure);
         let (adjacency, invariants) = crate::canonical::graph_of(structure);
-        let ranks = crate::canonical::canonical_ranks(&adjacency, &invariants, &counts);
+        let mask = crate::canonical::tautomer::endpoint_mask(structure, &counts);
+        let ranks = crate::canonical::canonical_ranks(
+            &adjacency,
+            &invariants,
+            &crate::canonical::tautomer::without_mobile_h(&counts, &mask),
+        );
         let groups = crate::canonical::tautomer::mobile_groups(structure, &counts, &ranks);
         let endpoints = crate::canonical::tautomer::endpoint_atoms(&ranks, &groups);
         let mut by_rank = vec![0u32; counts.len()];
