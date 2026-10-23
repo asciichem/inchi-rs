@@ -22,19 +22,35 @@ pub struct Structure {
     pub bonds: Vec<(usize, usize, u32)>,
 }
 
-/// Standard valences of the organic subset — the M1/M2 scope. S and
-/// P entries exist but their oxoacid chemistry is mobile-H (M3)
-/// territory.
-pub fn valence(element: &str) -> f64 {
+/// Allowed valences of the organic subset; the implicit hydrogen
+/// count is the smallest allowed valence that absorbs the bond-order
+/// sum, so hypervalent S/P chemistry (sulfate's S, phosphate's P)
+/// needs no hydrogens where a single fixed valence would invent them.
+pub fn allowed_valences(element: &str) -> &'static [f64] {
     match element {
-        "C" => 4.0,
-        "N" => 3.0,
-        "O" => 2.0,
-        "S" => 6.0,
-        "P" => 5.0,
-        "F" | "Cl" | "Br" | "I" | "H" => 1.0,
-        _ => 0.0,
+        "C" => &[4.0],
+        "N" => &[3.0],
+        "O" => &[2.0],
+        "S" => &[2.0, 4.0, 6.0],
+        "P" => &[3.0, 5.0],
+        "F" | "Cl" | "Br" | "I" | "H" => &[1.0],
+        _ => &[],
     }
+}
+
+/// The valence-gap hydrogen count for one atom.
+pub fn valence_gap(element: &str, bond_order_sum: f64) -> u32 {
+    for allowed in allowed_valences(element) {
+        if *allowed + 1e-9 >= bond_order_sum {
+            return (allowed - bond_order_sum).round().max(0.0) as u32;
+        }
+    }
+    0
+}
+
+/// The largest allowed valence.
+pub fn valence(element: &str) -> f64 {
+    allowed_valences(element).last().copied().unwrap_or(0.0)
 }
 
 pub fn bond_order(kind: u32) -> f64 {
@@ -88,7 +104,7 @@ impl Structure {
                 } else if atom.charge < 0 {
                     0
                 } else {
-                    (valence(&atom.element) - sum).max(0.0) as u32
+                    valence_gap(&atom.element, *sum)
                 }
             })
             .collect()
