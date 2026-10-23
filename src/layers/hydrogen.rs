@@ -1,8 +1,8 @@
-//! The `/h` layer: attached hydrogens per canonical rank, grouped by
-//! count — ranks ascending within a group, consecutive runs as
-//! ranges, counts ascending across groups (the oracle's layout, e.g.
-//! `h2H,1H3`). Counts are the ±1-standardized ones, so an anionic O
-//! shows the mobile H its `/p−1` accounts for.
+//! The `/h` layer: fixed attached hydrogens per canonical rank
+//! (counts ascending, ranks ascending within a count, consecutive
+//! runs as ranges — the oracle's layout, e.g. `h2H,1H3`), followed by
+//! the mobile-H groups (`(H,3,4)`). Counts are the ±1-standardized
+//! ones; an anionic O's H rides its group.
 
 use crate::error::Result;
 use crate::graph::Structure;
@@ -29,13 +29,38 @@ impl LayerEmitter for HydrogenLayer {
         let counts = standardization::adjusted_hydrogens(structure);
         let (adjacency, invariants) = crate::canonical::graph_of(structure);
         let ranks = crate::canonical::canonical_ranks(&adjacency, &invariants, &counts);
+        let groups = crate::canonical::tautomer::mobile_groups(structure, &counts, &ranks);
+        let endpoints = crate::canonical::tautomer::endpoint_atoms(&ranks, &groups);
         let mut by_rank = vec![0u32; counts.len()];
         for (atom, count) in counts.iter().enumerate() {
-            by_rank[ranks[atom] as usize - 1] = *count;
+            if !endpoints.contains(&atom) {
+                by_rank[ranks[atom] as usize - 1] = *count;
+            }
+        }
+        let mut segment = hydrogen_segment(&by_rank).unwrap_or_default();
+        let groups_text = groups
+            .iter()
+            .map(|group| {
+                let members: Vec<String> = group.ranks.iter().map(|r| r.to_string()).collect();
+                let count = if group.count > 1 {
+                    group.count.to_string()
+                } else {
+                    String::new()
+                };
+                format!("(H{},{})", count, members.join(","))
+            })
+            .collect::<Vec<_>>()
+            .join("");
+        if !groups_text.is_empty() && !segment.is_empty() {
+            segment.push(',');
+        }
+        segment.push_str(&groups_text);
+        if segment.is_empty() {
+            return Ok(None);
         }
         // The segment is the full InChI text: the letter rides along,
         // exactly like `p+1` and `c1-2...`.
-        Ok(hydrogen_segment(&by_rank).map(|segment| format!("h{segment}")))
+        Ok(Some(format!("h{segment}")))
     }
 }
 
@@ -120,19 +145,18 @@ mod tests {
     }
 
     #[test]
-    fn the_standardized_hydrogen_shows_in_the_segment() {
-        // Acetate: the anionic O carries the mobile H (h4H,1H3).
-        let mut o_anion = atom("O", 0, -1);
-        let mut o_carbonyl = atom("O", 0, 0);
-        o_anion.h_count = 0;
-        o_carbonyl.h_count = 0;
+    fn acetate_carries_its_mobile_hydrogen_in_a_group() {
+        // Oracle: InChI=1S/C2H4O2/c1-2(3)4/h1H3,(H,3,4)/p-1 — the
+        // standardized H rides the (H,3,4) group, not a fixed entry.
+        let o_anion = atom("O", 0, -1);
         let s = structure(
-            vec![atom("C", 0, 0), atom("C", 0, 0), o_carbonyl, o_anion],
+            vec![atom("C", 0, 0), atom("C", 0, 0), atom("O", 0, 0), o_anion],
             vec![(0, 1, 1), (1, 2, 2), (1, 3, 1)],
         );
-        // Canonical ranks: methyl=1, carbonyl C=2, O=3, O-=4 — the
-        // oracle records h4H,1H3 for acetate.
-        assert_eq!(HydrogenLayer.emit(&s).unwrap().as_deref(), Some("h4H,1H3"));
+        assert_eq!(
+            HydrogenLayer.emit(&s).unwrap().as_deref(),
+            Some("h1H3,(H,3,4)")
+        );
     }
 
     #[test]

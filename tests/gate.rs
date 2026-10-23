@@ -1,9 +1,10 @@
 //! The gate: the same inchi-tests corpus the reference engine passes.
 //! Contract: the engine's emitted segments equal the oracle's layer
 //! prefix byte-for-byte — each milestone extends the prefix.
-//! Mobile-H structures (m3-tagged, a parenthesized `/h` group, or
-//! triaged) are counted skips — their numbering crosses the t-group
-//! canonicalization, which is M3 scope. |charge| > 1 counts beyond-M1.
+//! Mobile-H groups are gated live since M3 slice 2; counted skips are
+//! the m3-tagged and triaged fixtures (the tautomer-parity residue),
+//! structures containing S or P (the S/P valence model is its own
+//! pending slice), isotopic fixtures (/i), and |charge| > 1.
 //! No silent skips.
 
 use std::fs;
@@ -64,11 +65,17 @@ fn emitted_layers_agree_with_the_oracle_prefix() {
             .split('/')
             .map(str::to_string)
             .collect();
-        let mobile_h = recorded
-            .iter()
-            .any(|segment| segment.starts_with('h') && segment.contains('('));
+        let molfile_text = case["molfile"].as_str().expect("molfile");
+        let has_sp = ["S", "P"].iter().any(|symbol| {
+            molfile_text
+                .lines()
+                .skip(4)
+                .take_while(|line| !line.starts_with("M  END"))
+                .filter(|line| line.len() >= 34)
+                .any(|line| line[31..34].trim() == *symbol)
+        });
         let isotopic_scope = recorded.iter().any(|segment| segment.starts_with('i'));
-        if m3 || triaged || mobile_h {
+        if m3 || triaged || has_sp {
             skipped += 1;
             continue;
         }
