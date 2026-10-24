@@ -69,6 +69,12 @@ impl Engine {
         }
         Ok(out)
     }
+
+    /// The InChIKey over the assembled identifier — the truncated
+    /// SHA-256 key, computed natively (see [`crate::key`]).
+    pub fn inchikey(&self) -> Result<String> {
+        crate::key::inchikey(&self.inchi_string()?)
+    }
 }
 
 #[cfg(test)]

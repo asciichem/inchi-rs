@@ -13,6 +13,7 @@ pub mod canonical;
 pub mod engine;
 mod error;
 pub mod graph;
+pub mod key;
 pub mod layers;
 mod molfile;
 
