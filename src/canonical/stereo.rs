@@ -1,19 +1,22 @@
-//! Tetrahedral stereo (`/t`, `/m`, `/s`) — M4 slice 1, decoded from
-//! oracle probes (the dev-time binary; input contract: a wedge (1) or
-//! dash (6) bond-stereo code whose FIRST atom is the stereocenter —
-//! exactly the gem writer's shape; the atom-parity field is ignored
-//! for 2D input, and degenerate coordinates void wedges entirely).
+//! Tetrahedral stereo (`/t`, `/m`, `/s`) — M4 slice 1, ported from
+//! the reference (ichister.c `set_stereo_atom_parity`; dev-time
+//! source read, never compiled or called). Input contract: a wedge
+//! (1) or dash (6) bond-stereo code whose FIRST atom is the
+//! stereocenter — the gem writer's shape; the atom-parity field is
+//! ignored for 2D input, and degenerate coordinates void wedges.
 //!
-//! Parity model, fitted on the probe grid and the alanine fixtures:
-//! the input ligand list is the heavy neighbors by atom-index order
-//! with the implicit hydrogen FIRST; a center's parity is the wedge
-//! direction (dash = 1) XOR the permutation parity of that list
-//! reordered rank-ascending (H last). Emission normalizes the first
-//! defined center's `/t` char to `-`, other defined centers show
-//! `p_i ⊕ p_first` (`-` same, `+` differ), unwedged candidate centers
-//! show `?`; `/m` is `p_first ⊕ (more than one center)`; `/s1` rides
-//! `/m`. Two same-orbit centers with opposite parity are the meso
-//! case — the oracle emits a bare `/t` with neither `/m` nor `/s`.
+//! Per center: the heavy ligands in neighbor order are lifted to 3D
+//! (the wedge carries z = ± its drawn length), the implicit hydrogen
+//! closes the tetrahedron at −(sum), and the parity is the sign of
+//! the triple product of ligands 1, 2, H viewed from ligand 0,
+//! inverted once for the appended H, composed with the
+//! input→canonical ligand permutation and one global convention
+//! constant. Emission: the first defined center's `/t` char is
+//! normalized `-`, other defined centers show `p_i ⊕ p_first`
+//! (`-` same, `+` differ), unwedged candidate centers `?`; `/m` is
+//! `p_first ⊕ (more than one center)`; `/s1` rides `/m`; two
+//! same-orbit centers with opposite parity are the meso case — bare
+//! `/t`, no `/m` `/s`.
 
 use crate::graph::Structure;
 
@@ -22,9 +25,6 @@ struct Center {
     atom: usize,
     /// Heavy-neighbor atom indices in input order (atom-index order).
     neighbors: Vec<usize>,
-    /// Where the implicit H sits in the input list (always first when
-    /// present — a 4-heavy-atom center has none).
-    hydrogen: Option<usize>,
     parity: Option<u32>,
 }
 
@@ -55,10 +55,10 @@ impl Center {
     }
 }
 
-/// The composition constant between the reference's half-bond parity
-/// and our canonical parity, fitted on the alanine pair and the
-/// 2-butanol grid.
-const PARITY_CONSTANT: u32 = 0;
+/// The composition constant between the reference's atom parity and
+/// our canonical parity bit, one global convention flip fitted on the
+/// alanine pair.
+const PARITY_CONSTANT: u32 = 1;
 
 /// The derived segments in `/t`, `/m`, `/s` order; empty when the
 /// structure carries no wedge parity at all.
@@ -75,14 +75,15 @@ pub fn segments(
     let mut centers = candidates(structure, hydrogens, ranks);
     for &(atom, bond_index, down) in &wedged {
         if let Some(center) = centers.iter_mut().find(|c| c.atom == atom) {
-            // Heavy ligands by ATOM NUMBER (the reference's neighbor
-            // order), lifted to 3D with the wedge out of the plane.
+            // Heavy ligands in the reference's neighbor[] order, the
+            // implicit H appended last — the list the atom parity is
+            // defined over.
             let ligands = center.heavy_by_atom_number();
-            let Some(half) = half_parity(structure, &ligands, bond_index, down) else {
+            let Some(bit) = atom_parity(structure, &ligands, bond_index, down) else {
                 continue;
             };
             let perm = permutation_parity(center.permutation_sequence(ranks));
-            center.parity = Some(half ^ perm ^ PARITY_CONSTANT);
+            center.parity = Some(bit ^ perm ^ PARITY_CONSTANT);
         }
     }
     let Some(first) = centers.iter().find(|c| c.parity.is_some()) else {
@@ -142,16 +143,15 @@ fn inversions(sequence: &[usize]) -> usize {
     }
     count
 }
-
-/// The reference's half-stereo-bond parity (ichister.c
-/// `half_stereo_bond_parity`): lift the three heavy ligand directions
-/// to 3D — the wedge bond carries z = ± its drawn length, the
-/// in-plane neighbors z = 0 — build a plane basis over the ligand
-/// differences with the new z-axis on the world +z (wedge) side,
-/// project, rotate ligand 0 onto +x, and read the counterclockwise
-/// order of ligands 1 and 2 (CCW = odd = 1). `None` for degenerate
-/// geometry (near-colinear bonds — the reference's ambiguity cases).
-fn half_parity(
+/// The reference's atom parity (ichister.c `set_stereo_atom_parity`):
+/// the heavy ligands in neighbor[] order are lifted to 3D — the wedge
+/// bond carries z = ± its drawn length, in-plane neighbors z = 0 — and
+/// each is normalized; the implicit hydrogen closes the tetrahedron at
+/// −(sum of the three); with the origin moved to ligand 0, the parity
+/// is the sign of the triple product of ligands 1, 2, and the H
+/// (negative = odd), inverted once because the H was appended last.
+/// `None` for degenerate geometry.
+fn atom_parity(
     structure: &Structure,
     ligands: &[usize],
     wedge_bond: usize,
@@ -175,7 +175,6 @@ fn half_parity(
         };
         coord[slot] = [dx / len, dy / len, z / len];
     }
-    let sub = |a: [f64; 3], b: [f64; 3]| [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
     let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
     let cross = |a: [f64; 3], b: [f64; 3]| {
         [
@@ -184,60 +183,24 @@ fn half_parity(
             a[0] * b[1] - a[1] * b[0],
         ]
     };
-    let len3 = |a: [f64; 3]| (dot(a, a)).sqrt();
-    // Plane normal of the ligand-direction differences — kept as the
-    // cross product gives it: the wedge's z sign lives in the normal's
-    // x/y components, and forcing n.z > 0 would erase it.
-    let d0 = sub(coord[0], coord[1]);
-    let d1 = sub(coord[1], coord[2]);
-    let mut normal = cross(d0, d1);
-    let nlen = len3(normal);
-    if nlen < 1e-9 {
+    let sub = |a: [f64; 3], b: [f64; 3]| [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+    // The implicit hydrogen closes the tetrahedron.
+    let hydrogen = [
+        -(coord[0][0] + coord[1][0] + coord[2][0]),
+        -(coord[0][1] + coord[1][1] + coord[2][1]),
+        -(coord[0][2] + coord[1][2] + coord[2][2]),
+    ];
+    // Origin at ligand 0; orientation of ligands 1, 2, H viewed from it.
+    let v1 = sub(coord[1], coord[0]);
+    let v2 = sub(coord[2], coord[0]);
+    let v3 = sub(hydrogen, coord[0]);
+    let triple = dot(cross(v1, v2), v3);
+    if triple.abs() < 1e-12 {
         return None;
     }
-    for value in &mut normal {
-        *value /= nlen;
-    }
-    // Basis: ligand 0 projected onto the plane, then its right-handed
-    // in-plane complement.
-    let height = dot(coord[0], normal);
-    let mut x_axis = sub(
-        coord[0],
-        [height * normal[0], height * normal[1], height * normal[2]],
-    );
-    let xlen = len3(x_axis);
-    if xlen < 1e-9 {
-        return None;
-    }
-    for value in &mut x_axis {
-        *value /= xlen;
-    }
-    let y_axis = cross(normal, x_axis);
-    // Ligand directions in the new basis, rotated so ligand 0 is +x.
-    let project = |c: [f64; 3]| [dot(c, x_axis), dot(c, y_axis)];
-    let p0 = project(coord[0]);
-    let angle = |p: [f64; 2]| -> f64 {
-        let c = p0[0] * p[0] + p0[1] * p[1];
-        let s = -p0[1] * p[0] + p0[0] * p[1];
-        let a = (s * p[0] + c * p[1]).atan2(c * p[0] + s * p[1]);
-        if a < 0.0 {
-            a + std::f64::consts::TAU
-        } else {
-            a
-        }
-    };
-    let a1 = angle(project(coord[1]));
-    let a2 = angle(project(coord[2]));
-    let degenerate = (a1 - a2).abs().sin().abs() < 1e-9 && {
-        let (min, max) = (a1.min(a2), a1.max(a2));
-        min > std::f64::consts::PI - 1e-9 || max < std::f64::consts::PI + 1e-9
-    };
-    if degenerate {
-        return None;
-    }
-    Some(u32::from(a1 < a2))
+    // Negative triple = odd; then the appended-H inversion (3 − parity).
+    Some(u32::from(triple < 0.0) ^ 1)
 }
-
 /// Atoms the wedge codes point FROM (the code's first atom), with the
 /// bond index and the direction (1 = dash).
 fn wedged_centers(structure: &Structure) -> Vec<(usize, usize, u32)> {
@@ -275,14 +238,11 @@ fn candidates(structure: &Structure, hydrogens: &[u32], ranks: &[u32]) -> Vec<Ce
                 }
             })
             .collect();
-        let hydrogen = if hydrogen_count == 1 {
-            Some(0)
-        } else if hydrogen_count == 0 && neighbors.len() == 4 {
-            None
-        } else {
-            continue;
-        };
-        if hydrogen.is_some() && neighbors.len() != 3 {
+        // Three heavy neighbors plus one implicit hydrogen, or four
+        // heavy neighbors.
+        let tetrahedral = (hydrogen_count == 1 && neighbors.len() == 3)
+            || (hydrogen_count == 0 && neighbors.len() == 4);
+        if !tetrahedral {
             continue;
         }
         let mut ligands: Vec<u32> = neighbors.iter().map(|&a| ranks[a]).collect();
@@ -294,14 +254,12 @@ fn candidates(structure: &Structure, hydrogens: &[u32], ranks: &[u32]) -> Vec<Ce
         out.push(Center {
             atom,
             neighbors,
-            hydrogen,
             parity: None,
         });
     }
     out.sort_by_key(|center| ranks[center.atom]);
     out
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -315,7 +273,10 @@ mod tests {
         }
     }
 
-    fn butanol(wedge: u8) -> Structure {
+    /// 2-butanol: atom1 is the center; the wedge rides the bond to the
+    /// OH (atom2) unless the layout moves it. Recorded oracle answers:
+    /// the canonical numbering is c1-3-4(2)5 (ranks [5,4,2,3,1]).
+    fn butanol(wedge: u8, positions: Vec<(f64, f64)>, wedge_bond: usize) -> Structure {
         Structure {
             atoms: vec![
                 atom("C", 3),
@@ -328,38 +289,103 @@ mod tests {
             stereo_bonds: if wedge == 0 {
                 Default::default()
             } else {
-                [(1usize, wedge)].into_iter().collect()
+                [(wedge_bond, wedge)].into_iter().collect()
             },
-            positions: vec![
-                (12.0, 22.0),
-                (72.0, 67.0),
-                (132.0, 22.0),
-                (72.0, 12.0),
-                (132.0, 62.0),
-            ],
+            positions,
         }
+    }
+
+    fn check(name: &str, structure: &Structure, expected: &[(&str, &str)]) {
+        let hydrogens = crate::graph::Structure::hydrogens(structure);
+        let (adjacency, invariants) = crate::canonical::graph_of(structure);
+        let symmetry = crate::canonical::base_symmetry(&adjacency, &invariants);
+        let ranks = crate::canonical::canonical_ranks(&adjacency, &invariants, &hydrogens);
+        let got = segments(structure, &hydrogens, &ranks, &symmetry);
+        let want: Vec<(char, String)> = expected
+            .iter()
+            .map(|(k, v)| (k.chars().next().unwrap(), v.to_string()))
+            .collect();
+        assert_eq!(got, want, "{name}");
     }
 
     #[test]
     fn the_probe_grid_reproduces_the_oracle_recordings() {
-        // Canonical ranks from the recorded /c c1-3-4(2)5: the center
-        // is rank 4, the wedged O ligand rank 2.
-        let ranks = [1u32, 4, 2, 3, 5];
-        let up = segments(&butanol(1), &[3, 1, 2, 2, 3], &ranks, &[1, 2, 3, 4, 5]);
-        assert_eq!(
-            up,
-            vec![('t', "t4-".into()), ('m', "m1".into()), ('s', "s1".into())]
+        // The identity-probe layout: wedge centre->OH up gives /m1,
+        // down /m0 (oracle-recorded).
+        let layout = vec![
+            (12.0, 22.0),
+            (72.0, 67.0),
+            (132.0, 22.0),
+            (72.0, 12.0),
+            (132.0, 62.0),
+        ];
+        check(
+            "original up",
+            &butanol(1, layout.clone(), 1),
+            &[("t", "t4-"), ("m", "m1"), ("s", "s1")],
         );
-        let down = segments(&butanol(6), &[3, 1, 2, 2, 3], &ranks, &[1, 2, 3, 4, 5]);
-        assert_eq!(
-            down,
-            vec![('t', "t4-".into()), ('m', "m0".into()), ('s', "s1".into())]
+        check(
+            "original down",
+            &butanol(6, layout.clone(), 1),
+            &[("t", "t4-"), ("m", "m0"), ("s", "s1")],
+        );
+    }
+
+    #[test]
+    fn mirrored_layouts_flip_the_parity_like_the_oracle() {
+        // Probe grid A (CH3 west, CH2 north) and its mirror A-m
+        // (CH2 south): the same wedge code flips /m between them.
+        let a = vec![
+            (27.0, 67.0),
+            (72.0, 67.0),
+            (117.0, 67.0),
+            (72.0, 112.0),
+            (87.0, 129.0),
+        ];
+        let a_mirrored = vec![
+            (27.0, 67.0),
+            (72.0, 67.0),
+            (117.0, 67.0),
+            (72.0, 22.0),
+            (87.0, 5.0),
+        ];
+        check(
+            "A up",
+            &butanol(1, a.clone(), 1),
+            &[("t", "t4-"), ("m", "m0"), ("s", "s1")],
+        );
+        check(
+            "A down",
+            &butanol(6, a.clone(), 1),
+            &[("t", "t4-"), ("m", "m1"), ("s", "s1")],
+        );
+        check(
+            "A-m up",
+            &butanol(1, a_mirrored.clone(), 1),
+            &[("t", "t4-"), ("m", "m1"), ("s", "s1")],
+        );
+        check(
+            "A-m down",
+            &butanol(6, a_mirrored, 1),
+            &[("t", "t4-"), ("m", "m0"), ("s", "s1")],
         );
     }
 
     #[test]
     fn no_wedge_carries_no_stereo() {
-        let ranks = [1u32, 4, 2, 3, 5];
-        assert!(segments(&butanol(0), &[3, 1, 2, 2, 3], &ranks, &[1, 2, 3, 4, 5]).is_empty());
+        let layout = vec![
+            (12.0, 22.0),
+            (72.0, 67.0),
+            (132.0, 22.0),
+            (72.0, 12.0),
+            (132.0, 62.0),
+        ];
+        assert!(segments(
+            &butanol(0, layout, 1),
+            &[3, 1, 2, 2, 3],
+            &[5, 4, 2, 3, 1],
+            &[1, 2, 3, 4, 5]
+        )
+        .is_empty());
     }
 }
