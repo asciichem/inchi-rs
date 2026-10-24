@@ -17,6 +17,20 @@
 use super::partition::Partition;
 use super::table::ConnectionTable;
 
+/// Orbit-minimal base ranks per atom: atoms the stage-1 search proved
+/// automorphic share their smallest canonical rank — the symmetry
+/// classes the stereo layer reads orbits from.
+pub fn base_symmetry(adjacency: &[Vec<usize>], invariants: &[(u16, u16)]) -> Vec<u32> {
+    let n = adjacency.len();
+    let base = search_stage_one(adjacency, invariants);
+    let mut symmetry: Vec<u32> = (0..n).map(|atom| base.partition.rank_of(atom)).collect();
+    for atom in 0..n {
+        let representative = base.orbits.representative(atom);
+        symmetry[atom] = symmetry[representative].min(symmetry[atom]);
+    }
+    symmetry
+}
+
 /// Final canonical rank (1-based) per atom.
 pub fn canonical_ranks(
     adjacency: &[Vec<usize>],
@@ -24,14 +38,7 @@ pub fn canonical_ranks(
     hydrogens: &[u32],
 ) -> Vec<u32> {
     let n = adjacency.len();
-    let base = search_stage_one(adjacency, invariants);
-    // Orbit-minimal base ranks: atoms the stage-1 search proved
-    // automorphic share their smallest canonical rank.
-    let mut symmetry: Vec<u32> = (0..n).map(|atom| base.partition.rank_of(atom)).collect();
-    for atom in 0..n {
-        let representative = base.orbits.representative(atom);
-        symmetry[atom] = symmetry[representative].min(symmetry[atom]);
-    }
+    let symmetry = base_symmetry(adjacency, invariants);
     // Stage-2 auxiliary partition: (symmetry rank, hydrogen count),
     // then equitable refinement — the reference's nRankAux.
     let aux_invariants: Vec<(u32, u32)> = (0..n)

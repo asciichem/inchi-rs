@@ -141,7 +141,11 @@ mod tests {
         let bonds: Vec<(usize, usize, u32)> = (0..6)
             .map(|i| (i, (i + 1) % 6, if i % 2 == 0 { 2 } else { 1 }))
             .collect();
-        let structure = Structure { atoms, bonds };
+        let structure = Structure {
+            atoms,
+            bonds,
+            ..Default::default()
+        };
         assert_eq!(aromatic_bonds(&structure).len(), 6);
     }
 
@@ -149,7 +153,11 @@ mod tests {
     fn cyclohexane_is_not() {
         let atoms = (0..6).map(|_| atom("C")).collect();
         let bonds: Vec<(usize, usize, u32)> = (0..6).map(|i| (i, (i + 1) % 6, 1)).collect();
-        let structure = Structure { atoms, bonds };
+        let structure = Structure {
+            atoms,
+            bonds,
+            ..Default::default()
+        };
         assert!(aromatic_bonds(&structure).is_empty());
     }
 
@@ -175,7 +183,11 @@ mod tests {
             .enumerate()
             .map(|(index, &(a, b))| (a, b, if index % 2 == 0 { 2 } else { 1 }))
             .collect();
-        let structure = Structure { atoms, bonds };
+        let structure = Structure {
+            atoms,
+            bonds,
+            ..Default::default()
+        };
         // Every ring bond of both hexagons is aromatic when its cycles
         // alternate; the shared bond participates in both.
         assert!(!aromatic_bonds(&structure).is_empty());

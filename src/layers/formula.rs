@@ -79,7 +79,11 @@ mod tests {
     use crate::layers::LayerEmitter;
 
     fn structure(atoms: Vec<AtomRecord>, bonds: Vec<(usize, usize, u32)>) -> Structure {
-        Structure { atoms, bonds }
+        Structure {
+            atoms,
+            bonds,
+            ..Default::default()
+        }
     }
 
     fn atom(element: &str) -> AtomRecord {

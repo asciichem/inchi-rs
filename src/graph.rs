@@ -20,6 +20,9 @@ pub struct Structure {
     /// V2000 bond types: 1 single, 2 double, 3 triple, 4 aromatic
     /// (aromatic counts as 1.5 in valence sums).
     pub bonds: Vec<(usize, usize, u32)>,
+    /// Bond-block stereo codes by bond index (1 = wedge, 6 = dash),
+    /// sparse — the tetrahedral layer's input.
+    pub stereo_bonds: std::collections::BTreeMap<usize, u8>,
 }
 
 /// Allowed valences of the organic subset; the implicit hydrogen
@@ -136,7 +139,11 @@ mod tests {
     use super::*;
 
     fn structure(atoms: Vec<AtomRecord>, bonds: Vec<(usize, usize, u32)>) -> Structure {
-        Structure { atoms, bonds }
+        Structure {
+            atoms,
+            bonds,
+            ..Default::default()
+        }
     }
 
     fn atom(element: &str) -> AtomRecord {

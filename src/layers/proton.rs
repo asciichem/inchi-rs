@@ -46,12 +46,14 @@ mod tests {
         let s = Structure {
             atoms: vec![charged_atom("N", 1, 4)],
             bonds: vec![],
+            stereo_bonds: Default::default(),
         };
         assert_eq!(ProtonLayer.emit(&s).unwrap(), Some("p+1".to_string()));
 
         let s = Structure {
             atoms: vec![charged_atom("O", -1, 1)],
             bonds: vec![],
+            stereo_bonds: Default::default(),
         };
         assert_eq!(ProtonLayer.emit(&s).unwrap(), Some("p-1".to_string()));
     }
@@ -69,6 +71,7 @@ mod tests {
                 charged_atom("C", 0, 0),
             ],
             bonds: vec![(0, 1, 1), (0, 2, 1), (0, 3, 1), (0, 4, 1)],
+            stereo_bonds: Default::default(),
         };
         assert_eq!(ProtonLayer.emit(&s).unwrap(), None);
     }

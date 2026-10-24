@@ -48,6 +48,7 @@ pub fn parse(input: &str) -> Result<Structure> {
     }
 
     let mut bonds = Vec::with_capacity(bond_count);
+    let mut stereo_bonds = std::collections::BTreeMap::new();
     for index in 0..bond_count {
         let line = line_or(&lines, 4 + atom_count + index, "bond block")?;
         let from: usize = line
@@ -68,6 +69,15 @@ pub fn parse(input: &str) -> Result<Structure> {
             .trim()
             .parse()
             .map_err(|_| bad(line))?;
+        let stereo: u8 = line
+            .get(9..12)
+            .unwrap_or("")
+            .trim()
+            .parse()
+            .map_err(|_| bad(line))?;
+        if stereo != 0 {
+            stereo_bonds.insert(index, stereo);
+        }
         bonds.push((from - 1, to - 1, kind));
     }
 
@@ -90,7 +100,11 @@ pub fn parse(input: &str) -> Result<Structure> {
         }
     }
 
-    Ok(Structure { atoms, bonds })
+    Ok(Structure {
+        atoms,
+        bonds,
+        stereo_bonds,
+    })
 }
 
 fn line_or<'a>(lines: &'a [&'a str], index: usize, block: &str) -> Result<&'a str> {
