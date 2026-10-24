@@ -14,6 +14,7 @@
 //! tables equal to an already-found terminal.
 
 pub mod aromatic;
+pub mod bond_stereo;
 pub mod emit;
 mod invariants;
 mod partition;

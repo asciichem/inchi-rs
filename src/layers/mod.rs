@@ -22,12 +22,12 @@ pub mod order {
     pub const H: u8 = 2;
     pub const Q: u8 = 3;
     pub const P: u8 = 4;
-    pub const I: u8 = 5;
-    pub const O: u8 = 6;
-    pub const T: u8 = 7;
-    pub const B: u8 = 8;
-    pub const M: u8 = 9;
-    pub const S: u8 = 10;
+    pub const B: u8 = 5;
+    pub const T: u8 = 6;
+    pub const M: u8 = 7;
+    pub const S: u8 = 8;
+    pub const I: u8 = 9;
+    pub const O: u8 = 10;
 }
 
 /// The layer kinds a registered set must cover before the engine may
@@ -64,6 +64,7 @@ pub fn default_layers() -> Vec<Box<dyn LayerEmitter>> {
         Box::new(connection::ConnectionLayer),
         Box::new(hydrogen::HydrogenLayer),
         Box::new(proton::ProtonLayer),
+        Box::new(stereo::BLayer),
         Box::new(stereo::TLayer),
         Box::new(stereo::MLayer),
         Box::new(stereo::SLayer),

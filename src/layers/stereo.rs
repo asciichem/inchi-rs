@@ -51,3 +51,37 @@ macro_rules! stereo_layer {
 stereo_layer!(TLayer, 't', order::T, "The `/t` stereocenter segment.");
 stereo_layer!(MLayer, 'm', order::M, "The `/m` inversion-flag segment.");
 stereo_layer!(SLayer, 's', order::S, "The `/s` stereo-type segment.");
+
+/// The `/b` double-bond segment — its own derived set (the bond
+/// stereo signs, not the tetrahedral centers); model in
+/// [`crate::canonical::bond_stereo`].
+pub struct BLayer;
+
+impl LayerEmitter for BLayer {
+    fn name(&self) -> &'static str {
+        "BLayer"
+    }
+
+    fn order(&self) -> u8 {
+        order::B
+    }
+
+    fn segment_kind(&self) -> Option<char> {
+        Some('b')
+    }
+
+    fn emit(&self, structure: &Structure) -> Result<Option<String>> {
+        let counts = crate::layers::standardization::adjusted_hydrogens(structure);
+        let (adjacency, invariants) = canonical::graph_of(structure);
+        let mask = canonical::tautomer::endpoint_mask(structure, &counts);
+        let ranks = canonical::canonical_ranks(
+            &adjacency,
+            &invariants,
+            &canonical::tautomer::without_mobile_h(&counts, &mask),
+        );
+        Ok(canonical::bond_stereo::segments(structure, &counts, &ranks)
+            .into_iter()
+            .next()
+            .map(|(_, segment)| segment))
+    }
+}
