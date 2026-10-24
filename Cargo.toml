@@ -25,3 +25,9 @@ napi-derive = { version = "2", optional = true }
 
 [dev-dependencies]
 serde_json = "1.0"
+proptest = "1.5"
+criterion = "0.5"
+
+[[bench]]
+name = "identity"
+harness = false
