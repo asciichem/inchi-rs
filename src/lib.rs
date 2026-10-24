@@ -7,7 +7,19 @@
 //! one emitter per InChI layer (open for extension, closed for
 //! modification).
 
-#![forbid(unsafe_code)]
+// Unsafe code is denied everywhere except the C ABI (src/ffi.rs),
+// where it is the job — the boundary module carries its own allow.
+#![deny(unsafe_code)]
+
+#[allow(unsafe_code)]
+pub mod ffi;
+
+#[cfg(feature = "napi")]
+pub mod napi_binding;
+#[cfg(feature = "pyo3")]
+pub mod pyo3_binding;
+#[cfg(feature = "wasm")]
+pub mod wasm_binding;
 
 pub mod canonical;
 pub mod engine;
