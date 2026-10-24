@@ -14,9 +14,9 @@
 //! constant. Emission: the first defined center's `/t` char is
 //! normalized `-`, other defined centers show `p_i ⊕ p_first`
 //! (`-` same, `+` differ), unwedged candidate centers `?`; `/m` is
-//! `p_first ⊕ (more than one center)`; `/s1` rides `/m`; two
-//! same-orbit centers with opposite parity are the meso case — bare
-//! `/t`, no `/m` `/s`.
+//! the first center's parity and `/s1` rides it; two same-orbit
+//! centers with opposite parity are the meso case — bare `/t`, no
+//! `/m` `/s`.
 
 use crate::graph::Structure;
 
@@ -29,12 +29,12 @@ struct Center {
 }
 
 impl Center {
-    /// The heavy ligands by ATOM NUMBER — the reference's neighbor[]
-    /// order, which the half-parity is computed over.
-    fn heavy_by_atom_number(&self) -> Vec<usize> {
-        let mut sorted = self.neighbors.clone();
-        sorted.sort_unstable();
-        sorted
+    /// The heavy ligands in neighbor order — the reference pushes
+    /// neighbors in molfile bond order (mol2atom.c), which the parity
+    /// is defined over; atom-number order diverges from it exactly on
+    /// centers whose first-listed bonds differ from their numbering.
+    fn heavy_by_neighbor_order(&self) -> Vec<usize> {
+        self.neighbors.clone()
     }
 
     /// The permutation sequence the parity composes with: the heavy
@@ -75,10 +75,10 @@ pub fn segments(
     let mut centers = candidates(structure, hydrogens, ranks);
     for &(atom, bond_index, down) in &wedged {
         if let Some(center) = centers.iter_mut().find(|c| c.atom == atom) {
-            // Heavy ligands in the reference's neighbor[] order, the
+            // Heavy ligands in the reference's neighbor order, the
             // implicit H appended last — the list the atom parity is
             // defined over.
-            let ligands = center.heavy_by_atom_number();
+            let ligands = center.heavy_by_neighbor_order();
             let Some(bit) = atom_parity(structure, &ligands, bond_index, down) else {
                 continue;
             };
@@ -118,8 +118,7 @@ pub fn segments(
     }
     let mut out = vec![('t', t)];
     if !meso {
-        let flag = first_parity ^ u32::from(centers.len() > 1);
-        out.push(('m', format!("m{flag}")));
+        out.push(('m', format!("m{first_parity}")));
         out.push(('s', "s1".to_string()));
     }
     out
