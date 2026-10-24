@@ -18,12 +18,13 @@ pub mod emit;
 mod invariants;
 mod partition;
 mod search;
+pub mod stereo;
 mod table;
 pub mod tautomer;
 
 pub use emit::connection_segment;
 pub use partition::Partition;
-pub use search::{canonical_ranks, canonical_table};
+pub use search::{base_symmetry, canonical_ranks, canonical_table};
 
 use crate::graph::Structure;
 
@@ -63,7 +64,11 @@ mod tests {
     }
 
     fn structure(atoms: Vec<AtomRecord>, bonds: Vec<(usize, usize, u32)>) -> Structure {
-        Structure { atoms, bonds }
+        Structure {
+            atoms,
+            bonds,
+            ..Default::default()
+        }
     }
 
     #[test]

@@ -9,6 +9,7 @@ pub mod formula;
 pub mod hydrogen;
 pub mod proton;
 pub mod standardization;
+pub mod stereo;
 
 use crate::error::Result;
 use crate::graph::Structure;
@@ -63,5 +64,8 @@ pub fn default_layers() -> Vec<Box<dyn LayerEmitter>> {
         Box::new(connection::ConnectionLayer),
         Box::new(hydrogen::HydrogenLayer),
         Box::new(proton::ProtonLayer),
+        Box::new(stereo::TLayer),
+        Box::new(stereo::MLayer),
+        Box::new(stereo::SLayer),
     ]
 }
