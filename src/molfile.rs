@@ -33,6 +33,7 @@ pub fn parse(input: &str) -> Result<Structure> {
         .map_err(|_| bad_counts(counts))?;
 
     let mut atoms = Vec::with_capacity(atom_count);
+    let mut positions = Vec::with_capacity(atom_count);
     for index in 0..atom_count {
         let line = line_or(&lines, 4 + index, "atom block")?;
         let element = line.get(31..34).unwrap_or("").trim().to_string();
@@ -40,6 +41,9 @@ pub fn parse(input: &str) -> Result<Structure> {
             return err(format!("{CONTEXT}: atom {index} has no element symbol"));
         }
         let code: u32 = line.get(42..45).unwrap_or("").trim().parse().unwrap_or(0);
+        let x: f64 = line.get(0..10).unwrap_or("").trim().parse().unwrap_or(0.0);
+        let y: f64 = line.get(10..20).unwrap_or("").trim().parse().unwrap_or(0.0);
+        positions.push((x, y));
         atoms.push(AtomRecord {
             element,
             h_count: code.saturating_sub(1),
@@ -104,6 +108,7 @@ pub fn parse(input: &str) -> Result<Structure> {
         atoms,
         bonds,
         stereo_bonds,
+        positions,
     })
 }
 

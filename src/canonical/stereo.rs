@@ -29,15 +29,36 @@ struct Center {
 }
 
 impl Center {
-    /// The input ligand list as canonical ranks (None = the H).
-    fn ligand_ranks(&self, ranks: &[u32]) -> Vec<Option<u32>> {
-        let mut list: Vec<Option<u32>> = self.neighbors.iter().map(|&a| Some(ranks[a])).collect();
-        if let Some(position) = self.hydrogen {
-            list.insert(position, None);
-        }
-        list
+    /// The heavy ligands by ATOM NUMBER — the reference's neighbor[]
+    /// order, which the half-parity is computed over.
+    fn heavy_by_atom_number(&self) -> Vec<usize> {
+        let mut sorted = self.neighbors.clone();
+        sorted.sort_unstable();
+        sorted
+    }
+
+    /// The permutation sequence the parity composes with: the heavy
+    /// ligands' input positions reordered rank-ascending (the implicit
+    /// H is rank-last and adds no transposition).
+    fn permutation_sequence(&self, ranks: &[u32]) -> Vec<usize> {
+        let mut remaining: Vec<(usize, u32)> = self
+            .neighbors
+            .iter()
+            .enumerate()
+            .map(|(position, &atom)| (position, ranks[atom]))
+            .collect();
+        remaining.sort_by_key(|&(_, rank)| rank);
+        remaining
+            .into_iter()
+            .map(|(position, _)| position)
+            .collect()
     }
 }
+
+/// The composition constant between the reference's half-bond parity
+/// and our canonical parity, fitted on the alanine pair and the
+/// 2-butanol grid.
+const PARITY_CONSTANT: u32 = 0;
 
 /// The derived segments in `/t`, `/m`, `/s` order; empty when the
 /// structure carries no wedge parity at all.
@@ -52,10 +73,16 @@ pub fn segments(
         return Vec::new();
     }
     let mut centers = candidates(structure, hydrogens, ranks);
-    for &(atom, down) in &wedged {
+    for &(atom, bond_index, down) in &wedged {
         if let Some(center) = centers.iter_mut().find(|c| c.atom == atom) {
-            let parity = permutation_parity(center.ligand_ranks(ranks));
-            center.parity = Some(parity ^ down);
+            // Heavy ligands by ATOM NUMBER (the reference's neighbor
+            // order), lifted to 3D with the wedge out of the plane.
+            let ligands = center.heavy_by_atom_number();
+            let Some(half) = half_parity(structure, &ligands, bond_index, down) else {
+                continue;
+            };
+            let perm = permutation_parity(center.permutation_sequence(ranks));
+            center.parity = Some(half ^ perm ^ PARITY_CONSTANT);
         }
     }
     let Some(first) = centers.iter().find(|c| c.parity.is_some()) else {
@@ -97,15 +124,10 @@ pub fn segments(
     out
 }
 
-/// Permutation parity (1 = odd) of the input list reordered
-/// rank-ascending with the H (None) last.
-fn permutation_parity(list: Vec<Option<u32>>) -> u32 {
-    let mut remaining: Vec<(usize, Option<u32>)> = list.into_iter().enumerate().collect();
-    remaining.sort_by_key(|&(position, rank)| (rank.is_none(), rank.unwrap_or(0), position));
-    let sequence: Vec<usize> = remaining
-        .into_iter()
-        .map(|(position, _)| position)
-        .collect();
+/// Permutation parity (1 = odd) of the sequence that orders the heavy
+/// ligands rank-ascending; the implicit H is rank-last and adds no
+/// transposition.
+fn permutation_parity(sequence: Vec<usize>) -> u32 {
     u32::try_from(inversions(&sequence) % 2).expect("parity fits u32")
 }
 
@@ -121,9 +143,104 @@ fn inversions(sequence: &[usize]) -> usize {
     count
 }
 
+/// The reference's half-stereo-bond parity (ichister.c
+/// `half_stereo_bond_parity`): lift the three heavy ligand directions
+/// to 3D — the wedge bond carries z = ± its drawn length, the
+/// in-plane neighbors z = 0 — build a plane basis over the ligand
+/// differences with the new z-axis on the world +z (wedge) side,
+/// project, rotate ligand 0 onto +x, and read the counterclockwise
+/// order of ligands 1 and 2 (CCW = odd = 1). `None` for degenerate
+/// geometry (near-colinear bonds — the reference's ambiguity cases).
+fn half_parity(
+    structure: &Structure,
+    ligands: &[usize],
+    wedge_bond: usize,
+    down: u32,
+) -> Option<u32> {
+    let position = |atom: usize| structure.positions.get(atom).copied();
+    let (cx, cy) = position(structure.bonds[wedge_bond].0)?;
+    let sign = if down == 1 { -1.0 } else { 1.0 };
+    let mut coord = [[0.0f64; 3]; 3];
+    for (slot, &atom) in ligands.iter().take(3).enumerate() {
+        let (x, y) = position(atom)?;
+        let (dx, dy) = (x - cx, y - cy);
+        let len = (dx * dx + dy * dy).sqrt();
+        if len < 1e-9 {
+            return None;
+        }
+        let z = if structure.bonds[wedge_bond].1 == atom {
+            sign * len
+        } else {
+            0.0
+        };
+        coord[slot] = [dx / len, dy / len, z / len];
+    }
+    let sub = |a: [f64; 3], b: [f64; 3]| [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+    let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    let cross = |a: [f64; 3], b: [f64; 3]| {
+        [
+            a[1] * b[2] - a[2] * b[1],
+            a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0],
+        ]
+    };
+    let len3 = |a: [f64; 3]| (dot(a, a)).sqrt();
+    // Plane normal of the ligand-direction differences — kept as the
+    // cross product gives it: the wedge's z sign lives in the normal's
+    // x/y components, and forcing n.z > 0 would erase it.
+    let d0 = sub(coord[0], coord[1]);
+    let d1 = sub(coord[1], coord[2]);
+    let mut normal = cross(d0, d1);
+    let nlen = len3(normal);
+    if nlen < 1e-9 {
+        return None;
+    }
+    for value in &mut normal {
+        *value /= nlen;
+    }
+    // Basis: ligand 0 projected onto the plane, then its right-handed
+    // in-plane complement.
+    let height = dot(coord[0], normal);
+    let mut x_axis = sub(
+        coord[0],
+        [height * normal[0], height * normal[1], height * normal[2]],
+    );
+    let xlen = len3(x_axis);
+    if xlen < 1e-9 {
+        return None;
+    }
+    for value in &mut x_axis {
+        *value /= xlen;
+    }
+    let y_axis = cross(normal, x_axis);
+    // Ligand directions in the new basis, rotated so ligand 0 is +x.
+    let project = |c: [f64; 3]| [dot(c, x_axis), dot(c, y_axis)];
+    let p0 = project(coord[0]);
+    let angle = |p: [f64; 2]| -> f64 {
+        let c = p0[0] * p[0] + p0[1] * p[1];
+        let s = -p0[1] * p[0] + p0[0] * p[1];
+        let a = (s * p[0] + c * p[1]).atan2(c * p[0] + s * p[1]);
+        if a < 0.0 {
+            a + std::f64::consts::TAU
+        } else {
+            a
+        }
+    };
+    let a1 = angle(project(coord[1]));
+    let a2 = angle(project(coord[2]));
+    let degenerate = (a1 - a2).abs().sin().abs() < 1e-9 && {
+        let (min, max) = (a1.min(a2), a1.max(a2));
+        min > std::f64::consts::PI - 1e-9 || max < std::f64::consts::PI + 1e-9
+    };
+    if degenerate {
+        return None;
+    }
+    Some(u32::from(a1 < a2))
+}
+
 /// Atoms the wedge codes point FROM (the code's first atom), with the
-/// direction (1 = dash).
-fn wedged_centers(structure: &Structure) -> Vec<(usize, u32)> {
+/// bond index and the direction (1 = dash).
+fn wedged_centers(structure: &Structure) -> Vec<(usize, usize, u32)> {
     let mut out = Vec::new();
     for (&bond_index, &code) in &structure.stereo_bonds {
         let Some(&(from, _, _)) = structure.bonds.get(bond_index) else {
@@ -134,7 +251,7 @@ fn wedged_centers(structure: &Structure) -> Vec<(usize, u32)> {
             1 => 0,
             _ => continue,
         };
-        out.push((from, down));
+        out.push((from, bond_index, down));
     }
     out.sort();
     out
@@ -213,6 +330,13 @@ mod tests {
             } else {
                 [(1usize, wedge)].into_iter().collect()
             },
+            positions: vec![
+                (12.0, 22.0),
+                (72.0, 67.0),
+                (132.0, 22.0),
+                (72.0, 12.0),
+                (132.0, 62.0),
+            ],
         }
     }
 

@@ -23,6 +23,9 @@ pub struct Structure {
     /// Bond-block stereo codes by bond index (1 = wedge, 6 = dash),
     /// sparse — the tetrahedral layer's input.
     pub stereo_bonds: std::collections::BTreeMap<usize, u8>,
+    /// Atom-block (x, y) coordinates — the 2D layout the wedge parity
+    /// is read against; empty when the reader carries none.
+    pub positions: Vec<(f64, f64)>,
 }
 
 /// Allowed valences of the organic subset; the implicit hydrogen
