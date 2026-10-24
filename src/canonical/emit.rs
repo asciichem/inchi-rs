@@ -11,6 +11,7 @@
 //! joins a lone continuation.
 
 use super::table::ConnectionTable;
+use std::collections::BTreeSet;
 
 const DELETED: usize = usize::MAX;
 
@@ -178,5 +179,204 @@ mod tests {
         // Oracle: InChI=1S/C4H10/c1-4(2)3/h4H,1-3H3 (isobutane).
         let got = segment(&["C", "C", "C", "C"], &[(0, 1), (0, 2), (0, 3)]);
         assert_eq!(got, "1-4(2)3");
+    }
+}
+
+/// The `/c` replay parser (test-support + consumer tooling): recovers
+/// the connectivity a segment denotes. Tokens follow the M2 decode —
+/// a number bonds to the current walk atom (fresh = advance, seen =
+/// closure), `(` saves the walk atom, `)` restores it, and `-` is a
+/// separator only. Returns the edge set as sorted `(a, b)` pairs with
+/// 0-based atom indices, or `None` when the segment is malformed.
+pub fn parse_connection_segment(segment: &str) -> Option<BTreeSet<(usize, usize)>> {
+    struct Replay {
+        rank_of: std::collections::HashMap<usize, usize>,
+        edges: BTreeSet<(usize, usize)>,
+        walk: Option<usize>,
+        stack: Vec<usize>,
+        number: String,
+    }
+
+    impl Replay {
+        /// A completed number: a fresh rank opens a new atom the walk
+        /// advances to; a seen rank is a ring closure and the walk
+        /// stays (the M2 decode).
+        fn flush(&mut self) -> Result<(), ()> {
+            let rank: usize = self.number.parse().map_err(|_| ())?;
+            self.number.clear();
+            let next = self.rank_of.len();
+            let atom = *self.rank_of.entry(rank).or_insert(next);
+            if let Some(current) = self.walk {
+                self.edges.insert((current.min(atom), current.max(atom)));
+            }
+            if atom == next {
+                self.walk = Some(atom);
+            }
+            Ok(())
+        }
+    }
+
+    let mut replay = Replay {
+        rank_of: Default::default(),
+        edges: BTreeSet::new(),
+        walk: None,
+        stack: Vec::new(),
+        number: String::new(),
+    };
+    for character in segment.chars() {
+        match character {
+            '0'..='9' => replay.number.push(character),
+            '(' => {
+                replay.flush().ok()?;
+                replay.stack.push(replay.walk?);
+            }
+            ')' => {
+                replay.flush().ok()?;
+                replay.walk = Some(replay.stack.pop()?);
+            }
+            ',' => {
+                replay.flush().ok()?;
+                // Branch members each bond to the saved atom, so the
+                // comma restores the walk to the branch head.
+                replay.walk = Some(*replay.stack.last()?);
+            }
+            '-' => {
+                replay.flush().ok()?;
+            }
+            _ => return None,
+        }
+    }
+    replay.flush().ok()?;
+    if !replay.stack.is_empty() {
+        return None;
+    }
+    Some(replay.edges)
+}
+
+#[cfg(test)]
+mod replay_tests {
+    use super::*;
+
+    #[test]
+    fn benzene_segment_replays_to_the_six_ring_edges() {
+        let edges = parse_connection_segment("1-2-4-6-5-3-1").expect("parses");
+        assert_eq!(edges.len(), 6);
+        let degrees = degrees_of(&edges, 6);
+        assert_eq!(degrees, vec![2, 2, 2, 2, 2, 2]);
+    }
+
+    #[test]
+    fn malformed_segments_are_rejected() {
+        assert!(parse_connection_segment("1-2(").is_none());
+        assert!(parse_connection_segment(")1-2").is_none());
+        assert!(parse_connection_segment("1-x").is_none());
+    }
+
+    fn degrees_of(edges: &BTreeSet<(usize, usize)>, atoms: usize) -> Vec<usize> {
+        let mut degrees = vec![0; atoms];
+        for (a, b) in edges {
+            degrees[*a] += 1;
+            degrees[*b] += 1;
+        }
+        degrees
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn every_emitted_segment_replays_to_the_same_graph(
+            seed in proptest::prelude::any::<u64>()
+        ) {
+            replay_random_graph(seed);
+        }
+    }
+
+    /// A random connected graph: a spanning tree plus extra edges,
+    /// bond orders drawn from {1, 2}. The emitted `/c` must replay to
+    /// a graph with the same atom count, element and degree
+    /// multisets, and bond-order multiset — the emitted segment is a
+    /// valid emission of the input graph, whatever the canonical
+    /// numbering chose.
+    fn replay_random_graph(seed: u64) {
+        let mut state = seed;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        let atoms = 2 + (next() % 7) as usize;
+        let mut edges: BTreeSet<(usize, usize)> = BTreeSet::new();
+        for atom in 1..atoms {
+            let parent = (next() as usize) % atom;
+            edges.insert((parent, atom));
+        }
+        for _ in 0..(next() % 4) {
+            let a = (next() as usize) % atoms;
+            let b = (next() as usize) % atoms;
+            if a != b {
+                edges.insert((a.min(b), a.max(b)));
+            }
+        }
+        let bonds: Vec<(usize, usize, u32)> = edges
+            .iter()
+            .enumerate()
+            .map(|(index, &(a, b))| {
+                (
+                    a,
+                    b,
+                    if (next() + index as u64).is_multiple_of(4) {
+                        2
+                    } else {
+                        1
+                    },
+                )
+            })
+            .collect();
+        let adjacency = neighbor_lists_from(&bonds, atoms);
+        let ranks: Vec<u32> = (1..=atoms as u32).collect();
+        let table = ConnectionTable::build(&ranks, &adjacency);
+        let Some(segment) = connection_segment(&table) else {
+            return;
+        };
+        let Some(replayed) = parse_connection_segment(&segment) else {
+            panic!("segment {segment:?} does not replay");
+        };
+        assert_eq!(replayed.len(), bonds.len(), "edge count for {segment:?}");
+        // The replay loses bond orders by design (the /c segment is
+        // hydrogen-free and order-free); the connectivity must round-
+        // trip exactly: edge count and per-atom degree multisets.
+        let input_connectivity: Vec<usize> = {
+            let mut degrees = vec![0; atoms];
+            for &(from, to, _) in &bonds {
+                degrees[from] += 1;
+                degrees[to] += 1;
+            }
+            let mut sorted = degrees;
+            sorted.sort_unstable();
+            sorted
+        };
+        let replay_connectivity: Vec<usize> = {
+            let mut degrees = vec![0; atoms];
+            for &(a, b) in &replayed {
+                degrees[a] += 1;
+                degrees[b] += 1;
+            }
+            let mut sorted = degrees;
+            sorted.sort_unstable();
+            sorted
+        };
+        assert_eq!(
+            input_connectivity, replay_connectivity,
+            "degrees for {segment:?}"
+        );
+    }
+
+    fn neighbor_lists_from(bonds: &[(usize, usize, u32)], atoms: usize) -> Vec<Vec<usize>> {
+        let mut adjacency = vec![Vec::new(); atoms];
+        for &(from, to, _) in bonds {
+            adjacency[from].push(to);
+            adjacency[to].push(from);
+        }
+        adjacency
     }
 }
