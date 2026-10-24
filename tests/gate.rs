@@ -99,6 +99,19 @@ fn emitted_layers_agree_with_the_oracle_prefix() {
                         }
                     }
                 }
+                // The native hasher must reproduce every recorded
+                // InChIKey from the recorded identifier — M5's
+                // contract, independent of which layers this
+                // milestone-partial engine emits.
+                let recorded = case["inchi"].as_str().unwrap_or("");
+                let key = inchi_rs::key::inchikey(recorded).expect("keys");
+                if key != case["inchikey"].as_str().unwrap_or("") {
+                    ok = false;
+                    failures_now.push(format!(
+                        "key {key} != oracle {}",
+                        case["inchikey"].as_str().unwrap_or("")
+                    ));
+                }
                 if ok {
                     if expected_failure {
                         retired += 1;
