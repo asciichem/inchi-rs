@@ -6,7 +6,22 @@ description = "Native Rust InChI engine, gated by the shared inchi-tests oracle 
 license = "MIT"
 repository = "https://github.com/asciichem/inchi-rs"
 
+[lib]
+crate-type = ["lib", "cdylib"]
+
+[features]
+default = []
+# Runtime bindings — each gates its own dependency tree; the core
+# stays dependency-free.
+pyo3 = ["dep:pyo3"]
+wasm = ["dep:wasm-bindgen"]
+napi = ["dep:napi", "dep:napi-derive"]
+
 [dependencies]
+pyo3 = { version = "0.22", optional = true }
+wasm-bindgen = { version = "0.2", optional = true }
+napi = { version = "2", optional = true, default-features = false }
+napi-derive = { version = "2", optional = true }
 
 [dev-dependencies]
 serde_json = "1.0"
