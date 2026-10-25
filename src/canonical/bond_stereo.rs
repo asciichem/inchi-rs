@@ -180,6 +180,7 @@ mod tests {
         AtomRecord {
             element: element.to_string(),
             h_count,
+            h_pinned: false,
             charge: 0,
         }
     }

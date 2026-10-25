@@ -4,6 +4,7 @@
 //! Adding a layer (connection, mobile-H, stereo) is a new module plus
 //! one registration in [`default_layers`].
 
+pub mod charge;
 pub mod connection;
 pub mod formula;
 pub mod hydrogen;
@@ -63,6 +64,7 @@ pub fn default_layers() -> Vec<Box<dyn LayerEmitter>> {
         Box::new(formula::FormulaLayer),
         Box::new(connection::ConnectionLayer),
         Box::new(hydrogen::HydrogenLayer),
+        Box::new(charge::ChargeLayer),
         Box::new(proton::ProtonLayer),
         Box::new(stereo::BLayer),
         Box::new(stereo::TLayer),

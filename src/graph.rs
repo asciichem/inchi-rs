@@ -12,6 +12,11 @@ pub struct AtomRecord {
     /// from the valence gap).
     pub h_count: u32,
     pub charge: i32,
+    /// The hydrogen count is final as read: the internal-salt
+    /// annihilation pins the neutralized anion at its anionic reading
+    /// (zero implicit H) — the reference never re-derives H after
+    /// moving a charge.
+    pub h_pinned: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -123,7 +128,7 @@ impl Structure {
             .map(|(atom, sum)| {
                 if atom.h_count > 0 {
                     atom.h_count
-                } else if atom.charge < 0 {
+                } else if atom.h_pinned || atom.charge < 0 {
                     0
                 } else if atom.charge > 0 {
                     cation_valence_gap(&atom.element, *sum)
@@ -171,6 +176,7 @@ mod tests {
         AtomRecord {
             element: element.to_string(),
             h_count: 0,
+            h_pinned: false,
             charge: 0,
         }
     }

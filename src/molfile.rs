@@ -48,6 +48,7 @@ pub fn parse(input: &str) -> Result<Structure> {
             element,
             h_count: code.saturating_sub(1),
             charge: 0,
+            h_pinned: false,
         });
     }
 

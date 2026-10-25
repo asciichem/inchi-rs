@@ -166,8 +166,14 @@ fn build_links(context: &Context) -> Vec<BTreeSet<usize>> {
     // acceptor joins all of its endpoint neighbors into one group.
     // A real single bond counts toward the donor role only when the
     // endpoint actually carries mobile H; an aromatic bond takes the
-    // endpoint's arithmetic role as either.
+    // endpoint's arithmetic role as either. The anchor is uncharged —
+    // the reference's tautomeric centerpoint carries no formal
+    // charge (a nitrate's N+ never groups its oxygens; the
+    // aci-anion's neutral N does).
     for anchor in 0..n {
+        if context.structure.atoms[anchor].charge != 0 {
+            continue;
+        }
         let mut ends: Vec<usize> = Vec::new();
         let mut donors = 0;
         let mut acceptors = 0;
@@ -439,6 +445,7 @@ mod tests {
         AtomRecord {
             element: element.to_string(),
             h_count: 0,
+            h_pinned: false,
             charge: 0,
         }
     }

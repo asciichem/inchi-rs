@@ -131,6 +131,7 @@ mod tests {
         AtomRecord {
             element: element.to_string(),
             h_count: 0,
+            h_pinned: false,
             charge: 0,
         }
     }
