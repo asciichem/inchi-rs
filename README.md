@@ -6,7 +6,8 @@ InChIKey — with no third-party binary at runtime.
 
 It is gated by the shared oracle corpus
 [inchi-tests](https://github.com/asciichem/inchi-tests), pinned in CI
-at `v0.2.5`. The corpus is recorded from IUPAC `inchi-1` (MIT) at
+at `v0.3.1` (5559 identity fixtures). The corpus is recorded from
+IUPAC `inchi-1` (MIT) at
 development time; the IUPAC binary is a test oracle only and is never
 shipped or executed by this engine.
 

@@ -54,9 +54,24 @@ pub fn valence_gap(element: &str, bond_order_sum: f64) -> u32 {
     0
 }
 
-/// The largest allowed valence.
-pub fn valence(element: &str) -> f64 {
-    allowed_valences(element).last().copied().unwrap_or(0.0)
+/// The valence-gap hydrogen count for a positively charged atom: the
+/// onium table, where the charge itself satisfies the neutral valence
+/// (R3S+ sulfonium, R4P+ phosphonium carry no riding hydrogen). Only
+/// the group-15/16 onium series realizes its charge as a removable
+/// proton; all other cations read gap zero and keep their charge in
+/// `/q`.
+pub fn cation_valence_gap(element: &str, bond_order_sum: f64) -> u32 {
+    let onium: &[f64] = match element {
+        "N" | "P" => &[4.0],
+        "O" | "S" | "Se" | "Te" => &[3.0],
+        _ => return 0,
+    };
+    for allowed in onium {
+        if *allowed + 1e-9 >= bond_order_sum {
+            return (allowed - bond_order_sum).round().max(0.0) as u32;
+        }
+    }
+    0
 }
 
 pub fn bond_order(kind: u32) -> f64 {
@@ -96,9 +111,10 @@ impl Structure {
 
     /// Implicit/explicit hydrogen count per atom: MDL H-count codes
     /// win, otherwise the valence gap (the oracle does the same for
-    /// code-0 atoms — a bare `O` line derives H2O). Anionic
-    /// heteroatoms take zero: their standardization crosses the
-    /// `/p` layer.
+    /// code-0 atoms — a bare `O` line derives H2O). Charged atoms read
+    /// their charge-shifted table: anionic heteroatoms take zero
+    /// (standardization crosses the `/p` layer), cations read the
+    /// onium gap.
     pub fn hydrogens(&self) -> Vec<u32> {
         let sums = self.bond_order_sums();
         self.atoms
@@ -109,6 +125,8 @@ impl Structure {
                     atom.h_count
                 } else if atom.charge < 0 {
                     0
+                } else if atom.charge > 0 {
+                    cation_valence_gap(&atom.element, *sum)
                 } else {
                     valence_gap(&atom.element, *sum)
                 }

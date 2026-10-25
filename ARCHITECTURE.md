@@ -80,12 +80,12 @@ the IUPAC reference binary:
 
 | Milestone | Modules | State |
 |---|---|---|
-| M0 corpus | inchi-tests (1559 fixtures at v0.2.5) | done |
+| M0 corpus | inchi-tests (5559 fixtures at v0.3.1) | done |
 | M1 formula + proton | `layers::formula`, `layers::proton`, `layers::standardization` | done — kind-matched byte agreement |
 | M2 /c connection | `canonical` (invariants, refinement, ranking), `layers::connection` | done — disagreements triaged with decoded reasons |
 | M3 mobile-H groups | `canonical::tautomer`, `layers::hydrogen` | done — 92 triage entries retired by the template slice; 64 dated entries remain |
 | M4 stereo /t /b /m /s | `canonical::stereo`, `canonical::bond_stereo`, `layers::stereo` | done — the stereo (20/20) and E/Z (10/10) tranches gate |
-| M5 InChIKey | `key` | done — 1559/1559 recorded keys reproduce |
+| M5 InChIKey | `key` | done — every recorded key reproduces (native SHA-256) |
 | M6 bindings | `ffi` (C ABI, cdylib) + the `pyo3` / `wasm` / `napi` features | done — default build compiles zero runtime dependencies |
 | M7 engine claims | the Ruby `NativeEngine`, the site claims matrix | done — gem and matrix merged |
 | Hardening | `emit::parse_connection_segment` + proptest, `benches/identity.rs`, `fuzz/` | done — fuzz runs manually on nightly |

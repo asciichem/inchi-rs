@@ -4,7 +4,7 @@
 //! the oracle corpus.
 
 use crate::error::{err, Result};
-use crate::graph::{valence, Structure};
+use crate::graph::{cation_valence_gap, Structure};
 
 /// The shared gate message: |charge| > 1 structures need the M3
 /// mobile-H rules and are beyond the M1 layers' authority.
@@ -68,7 +68,7 @@ fn hetero_anion(structure: &Structure) -> bool {
 fn cation_carries_hydrogen(structure: &Structure) -> bool {
     let sums = structure.bond_order_sums();
     structure.atoms.iter().zip(&sums).any(|(atom, sum)| {
-        atom.charge > 0 && (atom.h_count > 0 || (valence(&atom.element) - sum).max(0.0) > 0.0)
+        atom.charge > 0 && (atom.h_count > 0 || cation_valence_gap(&atom.element, *sum) > 0)
     })
 }
 
@@ -109,7 +109,7 @@ fn first_cation_site(structure: &Structure) -> Option<usize> {
         .enumerate()
         .find_map(|(index, atom)| {
             let carries = atom.charge > 0
-                && (atom.h_count > 0 || (valence(&atom.element) - sums[index]).max(0.0) > 0.0);
+                && (atom.h_count > 0 || cation_valence_gap(&atom.element, sums[index]) > 0);
             carries.then_some(index)
         })
 }
