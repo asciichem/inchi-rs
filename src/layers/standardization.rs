@@ -252,6 +252,7 @@ mod tests {
             h_count,
             charge,
             h_pinned: false,
+            isotope: 0,
         }
     }
 
@@ -261,6 +262,7 @@ mod tests {
             bonds,
             stereo_bonds: Default::default(),
             positions: Default::default(),
+            isotopic_h: Default::default(),
         }
     }
 

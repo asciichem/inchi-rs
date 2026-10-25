@@ -181,6 +181,7 @@ mod tests {
             element: element.to_string(),
             h_count,
             h_pinned: false,
+            isotope: 0,
             charge: 0,
         }
     }
@@ -191,6 +192,7 @@ mod tests {
             bonds: vec![(0, 1, 1), (1, 2, 2), (2, 3, 1)],
             stereo_bonds: Default::default(),
             positions: coords,
+            isotopic_h: Default::default(),
         }
     }
 
@@ -228,6 +230,7 @@ mod tests {
             bonds: vec![(0, 1, 1), (1, 2, 2)],
             stereo_bonds: Default::default(),
             positions: vec![(12.0, 22.0), (72.0, 50.0), (132.0, 50.0)],
+            isotopic_h: Default::default(),
         };
         assert!(segments(&structure, &[3, 1, 2], &[1, 2, 3]).is_empty());
     }
@@ -251,6 +254,7 @@ mod tests {
             bonds,
             stereo_bonds: Default::default(),
             positions: coords,
+            isotopic_h: Default::default(),
         };
         assert!(segments(&structure, &[1, 2, 1, 2, 1, 2], &[1, 2, 3, 4, 5, 6]).is_empty());
     }

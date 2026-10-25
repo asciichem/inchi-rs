@@ -17,6 +17,9 @@ pub struct AtomRecord {
     /// (zero implicit H) — the reference never re-derives H after
     /// moving a charge.
     pub h_pinned: bool,
+    /// Recorded mass number (M ISO); zero when the element's standard
+    /// isotope. Hydrogen isotopes 2/3 are D/T, never heavy deltas.
+    pub isotope: u16,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -31,6 +34,11 @@ pub struct Structure {
     /// Atom-block (x, y) coordinates — the 2D layout the wedge parity
     /// is read against; empty when the reader carries none.
     pub positions: Vec<(f64, f64)>,
+    /// Isotopic hydrogens folded onto their carriers at parse:
+    /// carrier index → (D count, T count). The /h layer is
+    /// isotope-blind (the D/T add to the carrier's plain count); the
+    /// /i layer reads this map.
+    pub isotopic_h: std::collections::BTreeMap<usize, (u32, u32)>,
 }
 
 /// Allowed valences of the organic subset; the implicit hydrogen
@@ -89,6 +97,90 @@ pub fn bond_order(kind: u32) -> f64 {
 }
 
 impl Structure {
+    /// Folds explicit hydrogen atoms onto their carriers: plain H
+    /// and D/T alike add to the carrier's hydrogen count (the /h
+    /// layer is isotope-blind), D/T also land in
+    /// [`Structure::isotopic_h`] for the /i layer, and the hydrogen
+    /// atoms leave the graph — the reference numbers heavy atoms
+    /// only.
+    pub fn fold_explicit_hydrogens(&mut self) {
+        if !self.atoms.iter().any(|atom| atom.element == "H") {
+            return;
+        }
+        let mut isotopic_h = std::mem::take(&mut self.isotopic_h);
+        let mut keep = vec![true; self.atoms.len()];
+        let mut folds: Vec<(usize, u32, u16)> = Vec::new();
+        for (index, atom) in self.atoms.iter().enumerate() {
+            if atom.element != "H" {
+                continue;
+            }
+            keep[index] = false;
+            let carrier = self.bonds.iter().find_map(|&(from, to, _)| {
+                if from == index {
+                    Some(to)
+                } else if to == index {
+                    Some(from)
+                } else {
+                    None
+                }
+            });
+            if let Some(carrier) = carrier {
+                folds.push((carrier, 1, atom.isotope));
+            }
+        }
+        for (carrier, count, isotope) in folds {
+            self.atoms[carrier].h_count += count;
+            match isotope {
+                2 => isotopic_h.entry(carrier).or_insert((0, 0)).0 += 1,
+                3 => isotopic_h.entry(carrier).or_insert((0, 0)).1 += 1,
+                _ => {}
+            }
+        }
+        self.isotopic_h = isotopic_h;
+        let mut remap = vec![0usize; self.atoms.len()];
+        let mut next = 0usize;
+        for index in 0..self.atoms.len() {
+            if keep[index] {
+                remap[index] = next;
+                next += 1;
+            }
+        }
+        self.atoms = self
+            .atoms
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| keep[*index])
+            .map(|(_, atom)| atom.clone())
+            .collect();
+        self.positions = self
+            .positions
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| keep[*index])
+            .map(|(_, position)| *position)
+            .collect();
+        let old_bonds = std::mem::take(&mut self.bonds);
+        let old_stereo = std::mem::take(&mut self.stereo_bonds);
+        let mut new_stereo = std::collections::BTreeMap::new();
+        let mut new_index = 0usize;
+        for (bond_index, &(from, to, kind)) in old_bonds.iter().enumerate() {
+            if !keep[from] || !keep[to] {
+                continue;
+            }
+            if let Some(&stereo) = old_stereo.get(&bond_index) {
+                new_stereo.insert(new_index, stereo);
+            }
+            self.bonds.push((remap[from], remap[to], kind));
+            new_index += 1;
+        }
+        self.stereo_bonds = new_stereo;
+        self.isotopic_h = self
+            .isotopic_h
+            .iter()
+            .map(|(carrier, counts)| (remap[*carrier], *counts))
+            .collect();
+    }
+
     pub fn total_charge(&self) -> i32 {
         self.atoms.iter().map(|a| a.charge).sum()
     }
@@ -177,6 +269,7 @@ mod tests {
             element: element.to_string(),
             h_count: 0,
             h_pinned: false,
+            isotope: 0,
             charge: 0,
         }
     }
