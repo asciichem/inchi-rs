@@ -22,8 +22,8 @@ impl LayerEmitter for ProtonLayer {
 
     fn emit(&self, structure: &Structure) -> Result<Option<String>> {
         standardization::ensure_within_m1(structure)?;
-        // The segment is the full InChI text: `p+1` / `p-1`.
-        Ok(standardization::proton_layer(structure).map(|sign| format!("p{sign}")))
+        // The segment is the full InChI text: `p+1`, `p-1`, ...
+        Ok(standardization::proton_layer(structure))
     }
 }
 
@@ -38,6 +38,7 @@ mod tests {
             element: element.to_string(),
             h_count,
             charge,
+            h_pinned: false,
         }
     }
 
@@ -51,6 +52,10 @@ mod tests {
         };
         assert_eq!(ProtonLayer.emit(&s).unwrap(), Some("p+1".to_string()));
 
+        // A lone O-H anion is not carbon-carried: the parent path —
+        // /p-1 with the parent water (fixture identity/hydroxide:
+        // H2O /h1H2 /p-1). Contrast the carbon-carried methoxide,
+        // which is fixed (/q-1).
         let s = Structure {
             atoms: vec![charged_atom("O", -1, 1)],
             bonds: vec![],
@@ -116,12 +121,13 @@ mod tests {
 
     #[test]
     fn protonated_heteroatom_onium_centers_emit_p_plus_one() {
-        // A group-15/16 center with a gap against its onium valence
-        // still has a removable proton: R2SH+ and R3NH+ carry /p+1.
+        // A group-15/16 center with an actual riding proton still
+        // has it removable: R2SH+ and R3NH+ carry /p+1 (oracle
+        // battery C[SH+](C), C[NH+](C)C).
         let s = Structure {
             atoms: vec![
                 charged_atom("C", 0, 0),
-                charged_atom("S", 1, 0),
+                charged_atom("S", 1, 1),
                 charged_atom("C", 0, 0),
             ],
             bonds: vec![(0, 1, 1), (1, 2, 1)],

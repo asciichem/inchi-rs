@@ -5,7 +5,7 @@
 
 use crate::error::{err, Result};
 use crate::graph::Structure;
-use crate::layers::{default_layers, LayerEmitter, MANDATORY_KINDS};
+use crate::layers::{default_layers, standardization, LayerEmitter, MANDATORY_KINDS};
 use crate::molfile;
 
 pub struct Engine {
@@ -14,13 +14,20 @@ pub struct Engine {
 }
 
 impl Engine {
-    /// Parses the V2000 molfile subset and equips the default layer
-    /// registry.
+    /// Parses the V2000 molfile subset, normalizes internal salts,
+    /// and equips the default layer registry.
     pub fn from_molfile(input: &str) -> Result<Self> {
+        let mut structure = molfile::parse(input)?;
+        standardization::normalize_internal_salts(&mut structure);
         Ok(Engine {
-            structure: molfile::parse(input)?,
+            structure,
             layers: default_layers(),
         })
+    }
+
+    /// The normalized structure — diagnostics for the triage tools.
+    pub fn structure(&self) -> &Structure {
+        &self.structure
     }
 
     /// The derived segments, tagged by layer kind — everything the
