@@ -39,6 +39,7 @@ mod tests {
             h_count,
             charge,
             h_pinned: false,
+            isotope: 0,
         }
     }
 
@@ -49,6 +50,7 @@ mod tests {
             bonds: vec![],
             stereo_bonds: Default::default(),
             positions: Default::default(),
+            isotopic_h: Default::default(),
         };
         assert_eq!(ProtonLayer.emit(&s).unwrap(), Some("p+1".to_string()));
 
@@ -61,6 +63,7 @@ mod tests {
             bonds: vec![],
             stereo_bonds: Default::default(),
             positions: Default::default(),
+            isotopic_h: Default::default(),
         };
         assert_eq!(ProtonLayer.emit(&s).unwrap(), Some("p-1".to_string()));
     }
@@ -80,6 +83,7 @@ mod tests {
             bonds: vec![(0, 1, 1), (0, 2, 1), (0, 3, 1), (0, 4, 1)],
             stereo_bonds: Default::default(),
             positions: Default::default(),
+            isotopic_h: Default::default(),
         };
         assert_eq!(ProtonLayer.emit(&s).unwrap(), None);
     }
@@ -101,6 +105,7 @@ mod tests {
             bonds: vec![(0, 1, 1), (1, 2, 1), (2, 3, 1), (2, 4, 1)],
             stereo_bonds: Default::default(),
             positions: Default::default(),
+            isotopic_h: Default::default(),
         };
         assert_eq!(ProtonLayer.emit(&s).unwrap(), None);
 
@@ -115,6 +120,7 @@ mod tests {
             bonds: vec![(0, 1, 1), (0, 2, 1), (0, 3, 1), (0, 4, 1)],
             stereo_bonds: Default::default(),
             positions: Default::default(),
+            isotopic_h: Default::default(),
         };
         assert_eq!(ProtonLayer.emit(&s).unwrap(), None);
     }
@@ -133,6 +139,7 @@ mod tests {
             bonds: vec![(0, 1, 1), (1, 2, 1)],
             stereo_bonds: Default::default(),
             positions: Default::default(),
+            isotopic_h: Default::default(),
         };
         assert_eq!(ProtonLayer.emit(&s).unwrap(), Some("p+1".to_string()));
 
@@ -146,6 +153,7 @@ mod tests {
             bonds: vec![(0, 1, 1), (1, 2, 1), (1, 3, 1)],
             stereo_bonds: Default::default(),
             positions: Default::default(),
+            isotopic_h: Default::default(),
         };
         assert_eq!(ProtonLayer.emit(&s).unwrap(), Some("p+1".to_string()));
     }
@@ -165,6 +173,7 @@ mod tests {
             bonds: vec![(0, 1, 1), (1, 2, 1), (2, 3, 1), (2, 4, 1)],
             stereo_bonds: Default::default(),
             positions: Default::default(),
+            isotopic_h: Default::default(),
         };
         let hydrogens = s.hydrogens();
         assert_eq!(hydrogens[2], 0);

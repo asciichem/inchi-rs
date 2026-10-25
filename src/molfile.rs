@@ -10,8 +10,8 @@ use crate::graph::{AtomRecord, Structure};
 const CONTEXT: &str = "molfile";
 
 /// Reads the V2000 subset: counts line, atom block, bond block, and
-/// `M  CHG` / `M  ISO` property lines. `M  ISO` is consumed and
-/// ignored at this level — isotopes do not affect any M1 layer.
+/// `M  CHG` / `M  ISO` property lines. Isotope mass numbers land on the
+/// atoms (the /i layer and the hydrogen fold read them).
 pub fn parse(input: &str) -> Result<Structure> {
     let lines: Vec<&str> = input.lines().collect();
     if lines.len() < 5 {
@@ -49,6 +49,7 @@ pub fn parse(input: &str) -> Result<Structure> {
             h_count: code.saturating_sub(1),
             charge: 0,
             h_pinned: false,
+            isotope: 0,
         });
     }
 
@@ -101,6 +102,8 @@ pub fn parse(input: &str) -> Result<Structure> {
             let atom = atoms.get_mut(index - 1).ok_or_else(|| bad(line))?;
             if is_charge {
                 atom.charge = value;
+            } else {
+                atom.isotope = value.max(0) as u16;
             }
         }
     }
@@ -110,6 +113,7 @@ pub fn parse(input: &str) -> Result<Structure> {
         bonds,
         stereo_bonds,
         positions,
+        isotopic_h: Default::default(),
     })
 }
 

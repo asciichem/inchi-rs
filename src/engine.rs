@@ -15,10 +15,12 @@ pub struct Engine {
 
 impl Engine {
     /// Parses the V2000 molfile subset, normalizes internal salts,
-    /// and equips the default layer registry.
+    /// folds explicit hydrogen atoms onto their carriers, and equips
+    /// the default layer registry.
     pub fn from_molfile(input: &str) -> Result<Self> {
         let mut structure = molfile::parse(input)?;
         standardization::normalize_internal_salts(&mut structure);
+        structure.fold_explicit_hydrogens();
         Ok(Engine {
             structure,
             layers: default_layers(),

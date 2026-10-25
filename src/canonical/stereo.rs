@@ -269,6 +269,7 @@ mod tests {
             element: element.to_string(),
             h_count,
             h_pinned: false,
+            isotope: 0,
             charge: 0,
         }
     }
@@ -292,6 +293,7 @@ mod tests {
                 [(wedge_bond, wedge)].into_iter().collect()
             },
             positions,
+            isotopic_h: Default::default(),
         }
     }
 

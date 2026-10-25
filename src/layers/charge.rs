@@ -39,6 +39,7 @@ mod tests {
             h_count,
             charge,
             h_pinned: false,
+            isotope: 0,
         }
     }
 
@@ -57,6 +58,7 @@ mod tests {
             bonds: vec![(0, 1, 1), (0, 2, 1), (0, 3, 1), (0, 4, 1)],
             stereo_bonds: Default::default(),
             positions: Default::default(),
+            isotopic_h: Default::default(),
         };
         assert_eq!(ChargeLayer.emit(&s).unwrap(), Some("q+1".to_string()));
     }
@@ -71,6 +73,7 @@ mod tests {
             bonds: vec![(0, 1, 1)],
             stereo_bonds: Default::default(),
             positions: Default::default(),
+            isotopic_h: Default::default(),
         };
         assert_eq!(ChargeLayer.emit(&s).unwrap(), Some("q-1".to_string()));
 
@@ -79,6 +82,7 @@ mod tests {
             bonds: vec![],
             stereo_bonds: Default::default(),
             positions: Default::default(),
+            isotopic_h: Default::default(),
         };
         assert_eq!(ChargeLayer.emit(&s).unwrap(), Some("q-1".to_string()));
     }
@@ -97,6 +101,7 @@ mod tests {
             bonds: vec![(0, 1, 1), (1, 2, 2), (1, 3, 1)],
             stereo_bonds: Default::default(),
             positions: Default::default(),
+            isotopic_h: Default::default(),
         };
         standardization::normalize_internal_salts(&mut s);
         assert!(s.atoms.iter().all(|atom| atom.charge == 0));
@@ -124,6 +129,7 @@ mod tests {
             bonds: (0..7).map(|i| (i, i + 1, 1)).collect(),
             stereo_bonds: Default::default(),
             positions: Default::default(),
+            isotopic_h: Default::default(),
         };
         standardization::normalize_internal_salts(&mut s);
         assert_eq!(s.atoms[0].charge, 1);

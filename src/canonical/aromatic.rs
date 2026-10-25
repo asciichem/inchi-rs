@@ -132,6 +132,7 @@ mod tests {
             element: element.to_string(),
             h_count: 0,
             h_pinned: false,
+            isotope: 0,
             charge: 0,
         }
     }

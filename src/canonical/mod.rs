@@ -30,6 +30,8 @@ pub use search::{base_symmetry, canonical_ranks, canonical_table};
 use crate::graph::Structure;
 
 /// Atom adjacency and reference invariants for canonicalization.
+/// Explicit hydrogen atoms never reach here — they are folded onto
+/// their carriers at parse time, so the numbering is heavy-atom-only.
 pub fn graph_of(structure: &Structure) -> (Vec<Vec<usize>>, Vec<(u16, u16)>) {
     let n = structure.atoms.len();
     let mut adjacency = vec![Vec::new(); n];
@@ -61,6 +63,7 @@ mod tests {
             element: element.to_string(),
             h_count: 0,
             h_pinned: false,
+            isotope: 0,
             charge: 0,
         }
     }

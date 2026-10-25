@@ -8,6 +8,7 @@ pub mod charge;
 pub mod connection;
 pub mod formula;
 pub mod hydrogen;
+pub mod isotope;
 pub mod proton;
 pub mod standardization;
 pub mod stereo;
@@ -70,5 +71,6 @@ pub fn default_layers() -> Vec<Box<dyn LayerEmitter>> {
         Box::new(stereo::TLayer),
         Box::new(stereo::MLayer),
         Box::new(stereo::SLayer),
+        Box::new(isotope::IsotopeLayer),
     ]
 }

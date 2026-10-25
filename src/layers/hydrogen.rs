@@ -11,6 +11,20 @@ use crate::layers::{order, LayerEmitter};
 
 pub struct HydrogenLayer;
 
+/// The canonical ranks the /h and /i layers speak: the heavy-atom
+/// numbering under the standardized hydrogen counts (explicit H
+/// atoms are invisible vertices — see `graph_of`).
+pub fn canonical_ranks_for(structure: &Structure) -> Vec<u32> {
+    let (adjacency, invariants) = crate::canonical::graph_of(structure);
+    let counts = standardization::adjusted_hydrogens(structure);
+    let mask = crate::canonical::tautomer::endpoint_mask(structure, &counts);
+    crate::canonical::canonical_ranks(
+        &adjacency,
+        &invariants,
+        &crate::canonical::tautomer::without_mobile_h(&counts, &mask),
+    )
+}
+
 impl LayerEmitter for HydrogenLayer {
     fn name(&self) -> &'static str {
         "hydrogen"
@@ -27,13 +41,7 @@ impl LayerEmitter for HydrogenLayer {
     fn emit(&self, structure: &Structure) -> Result<Option<String>> {
         standardization::ensure_within_m1(structure)?;
         let counts = standardization::adjusted_hydrogens(structure);
-        let (adjacency, invariants) = crate::canonical::graph_of(structure);
-        let mask = crate::canonical::tautomer::endpoint_mask(structure, &counts);
-        let ranks = crate::canonical::canonical_ranks(
-            &adjacency,
-            &invariants,
-            &crate::canonical::tautomer::without_mobile_h(&counts, &mask),
-        );
+        let ranks = canonical_ranks_for(structure);
         let groups = crate::canonical::tautomer::mobile_groups(structure, &counts, &ranks);
         let endpoints = crate::canonical::tautomer::endpoint_atoms(&ranks, &groups);
         let mut by_rank = vec![0u32; counts.len()];
@@ -128,6 +136,7 @@ mod tests {
             element: element.to_string(),
             h_count,
             h_pinned: false,
+            isotope: 0,
             charge,
         }
     }
