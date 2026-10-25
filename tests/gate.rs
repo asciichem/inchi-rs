@@ -1,10 +1,10 @@
 //! The gate: the same inchi-tests corpus the reference engine passes.
-//! Contract: the engine's emitted segments equal the oracle's layer
-//! prefix byte-for-byte — each milestone extends the prefix.
-//! Mobile-H groups and the m3-tagged S/P slice gate live since M3
-//! slice 2; counted skips are the triaged fixtures (dated,
-//! decoded-reason debts) and isotopic fixtures (/i). |charge| > 1
-//! counts beyond-M1. No silent skips.
+//! Contract: FULL byte equality — the engine's assembled identifier
+//! equals the oracle's recording exactly, every layer present in the
+//! oracle's order (formula, /c, /h, /q, /p, stereo, /i), plus the
+//! native InChIKey. Counted skips are the triaged fixtures (dated,
+//! decoded-reason debts) and |charge| > 1 (beyond-M1). No silent
+//! skips; a triaged fixture that passes is a retirement to act on.
 
 use std::fs;
 use std::path::PathBuf;
@@ -16,7 +16,7 @@ fn suite_dir() -> PathBuf {
 }
 
 #[test]
-fn emitted_layers_agree_with_the_oracle_prefix() {
+fn the_identifier_equals_the_oracle_recording() {
     let dir = suite_dir();
     let fixtures = dir.join("corpus/fixtures");
     let mut cases = Vec::new();
@@ -48,7 +48,6 @@ fn emitted_layers_agree_with_the_oracle_prefix() {
     let mut pass = 0;
     let mut skipped = 0;
     let mut retired = 0;
-    let mut isotopic = 0;
     let mut beyond = 0;
     let mut failures = Vec::new();
     let mut retirements = Vec::new();
@@ -58,52 +57,21 @@ fn emitted_layers_agree_with_the_oracle_prefix() {
         // failures (dated, decoded debts). A triaged fixture that
         // passes is a retirement to act on, never a silent skip.
         let expected_failure = triage.get(id).map(|_| ()).is_some();
-        let recorded: Vec<String> = case["inchi"]
-            .as_str()
-            .expect("inchi")
-            .split('/')
-            .map(str::to_string)
-            .collect();
-        let isotopic_scope = recorded.iter().any(|segment| segment.starts_with('i'));
-        if isotopic_scope {
-            // Isotopes ride their own milestone (/i layer); the reader
-            // also sees explicit D atoms as heavy ones until then.
-            isotopic += 1;
-            continue;
-        }
+        let recorded = case["inchi"].as_str().expect("inchi");
 
         let molfile = case["molfile"].as_str().expect("molfile");
 
-        match inchi_rs::Engine::from_molfile(molfile).and_then(|engine| engine.segments()) {
-            Ok(segments) => {
-                // Kind-matched: each emitted segment is compared to
-                // the oracle's recording of THAT layer kind, wherever
-                // InChI orders it (formula = the bare first segment;
-                // others by their letter).
-                let mut ok = true;
+        match inchi_rs::Engine::from_molfile(molfile).and_then(|engine| engine.inchi_string()) {
+            Ok(assembled) => {
+                // Full byte equality: every layer present, in the
+                // oracle's order, byte-identical.
+                let mut ok = assembled == recorded;
                 let mut failures_now = Vec::new();
-                for (kind, segment) in &segments {
-                    let expected = match kind {
-                        None => recorded.get(1),
-                        Some(letter) => recorded
-                            .iter()
-                            .find(|s| s.starts_with(*letter) && s.len() > 1),
-                    };
-                    match expected {
-                        Some(expected) if expected == segment => {}
-                        expected => {
-                            ok = false;
-                            failures_now.push(format!(
-                                "{kind:?} segment {segment:?} != oracle {expected:?}"
-                            ));
-                        }
-                    }
+                if !ok {
+                    failures_now.push(format!("assembled {assembled:?} != oracle {recorded:?}"));
                 }
                 // The native hasher must reproduce every recorded
-                // InChIKey from the recorded identifier — M5's
-                // contract, independent of which layers this
-                // milestone-partial engine emits.
-                let recorded = case["inchi"].as_str().unwrap_or("");
+                // InChIKey from the recorded identifier.
                 let key = inchi_rs::key::inchikey(recorded).expect("keys");
                 if key != case["inchikey"].as_str().unwrap_or("") {
                     ok = false;
@@ -141,15 +109,15 @@ fn emitted_layers_agree_with_the_oracle_prefix() {
 
     assert!(
         failures.is_empty(),
-        "{} layer failure(s):\n{}\n(pass: {pass}, expected-failure skips: {skipped},          RETIRED (triaged, now passing — update the triage file): {retired}, isotopic skips: \
-         {isotopic}, beyond-±1: {beyond}, total: {})",
+        "{} mismatch(es):\n{}\n(pass: {pass}, expected-failure skips: {skipped},          RETIRED (triaged, now passing — update the triage file): {retired}, \
+         beyond-±1: {beyond}, total: {})",
         failures.len(),
         failures.join("\n"),
         cases.len()
     );
     println!(
-        "gate: pass {pass}, expected-failure skips {skipped}, retired {retired}, isotopic \
-         {isotopic}, beyond-±1 {beyond}, total {}",
+        "gate: pass {pass}, expected-failure skips {skipped}, retired {retired}, \
+         beyond-±1 {beyond}, total {}",
         cases.len()
     );
     assert!(
