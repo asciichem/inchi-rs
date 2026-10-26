@@ -301,7 +301,7 @@ mod tests {
         let hydrogens = crate::graph::Structure::hydrogens(structure);
         let (adjacency, invariants) = crate::canonical::graph_of(structure);
         let symmetry = crate::canonical::base_symmetry(&adjacency, &invariants);
-        let ranks = crate::canonical::canonical_ranks(&adjacency, &invariants, &hydrogens);
+        let ranks = crate::canonical::canonical_ranks(&adjacency, &invariants, &hydrogens, &[]);
         let got = segments(structure, &hydrogens, &ranks, &symmetry);
         let want: Vec<(char, String)> = expected
             .iter()

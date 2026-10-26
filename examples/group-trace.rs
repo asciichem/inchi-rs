@@ -21,10 +21,12 @@ fn main() {
                 let groups = {
                     let (adjacency, invariants) = inchi_rs::canonical::graph_of(s);
                     let mask = inchi_rs::canonical::tautomer::endpoint_mask(s, &counts);
+                    let groups = inchi_rs::canonical::group_membership(s, &counts);
                     let ranks = inchi_rs::canonical::canonical_ranks(
                         &adjacency,
                         &invariants,
                         &inchi_rs::canonical::tautomer::without_mobile_h(&counts, &mask),
+                        &groups,
                     );
                     inchi_rs::canonical::tautomer::mobile_groups(s, &counts, &ranks)
                 };

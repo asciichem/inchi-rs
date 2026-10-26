@@ -147,6 +147,20 @@ pub fn endpoint_mask(structure: &Structure, hydrogens: &[u32]) -> Vec<bool> {
     mask
 }
 
+/// The mobile groups rank-free, as (hydrogen count, member atoms) —
+/// the terminal-compare rows inside the canonicalization search (the
+/// reference's t-group CT section).
+pub fn group_membership(structure: &Structure, hydrogens: &[u32]) -> Vec<(u32, Vec<usize>)> {
+    let context = Context::new(structure, hydrogens);
+    components(&context, hydrogens)
+        .into_iter()
+        .map(|members| {
+            let count = members.iter().map(|&m| hydrogens[m]).sum();
+            (count, members)
+        })
+        .collect()
+}
+
 /// Stage-2 hydrogen counts: the given counts with mobile H removed —
 /// the reference's `numHNoTautH`, which both the `/c` and `/h`
 /// canonicalizations rank by.
