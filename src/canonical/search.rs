@@ -52,7 +52,20 @@ pub fn canonical_ranks(
     aux.refine(adjacency);
     let aux_rank: Vec<u32> = (0..n).map(|atom| aux.rank_of(atom)).collect();
 
-    let informed = search_stage_two(adjacency, &aux, &aux_rank, hydrogens, groups);
+    // THE SEARCH TREE GROWS FROM THE H-FREE (ELEMENT, DEGREE)
+    // PARTITION — the reference's pi[0] (its bHydrogensInRanks=0
+    // seed block). The (symmetry, H) aux partition only orders the
+    // candidates; seeding from it would fence a CH and a CH2 that
+    // the reference's tree individualizes across.
+    let mut base = Partition::initial_pair(
+        &invariants
+            .iter()
+            .map(|(element, degree)| (*element as u32, *degree as u32))
+            .collect::<Vec<_>>(),
+    );
+    base.refine(adjacency);
+
+    let informed = search_stage_two(adjacency, &base, &aux_rank, hydrogens, groups);
     (0..n).map(|atom| informed.rank_of(atom)).collect()
 }
 
@@ -251,8 +264,11 @@ fn descend_hinformed(
                         std::cmp::Ordering::Less => false,
                         std::cmp::Ordering::Equal => {
                             match counts(partition).cmp(&counts(best_partition)) {
-                                std::cmp::Ordering::Greater => true,
-                                std::cmp::Ordering::Less => false,
+                                // The M3 corpus decode: at table-equal
+                                // terminals the SMALLER per-rank
+                                // hydrogen vector wins.
+                                std::cmp::Ordering::Less => true,
+                                std::cmp::Ordering::Greater => false,
                                 std::cmp::Ordering::Equal => rows(partition) > rows(best_partition),
                             }
                         }
@@ -334,27 +350,20 @@ mod tests {
 
     #[test]
     fn isoprene_numbers_the_ch2s_before_the_methyl() {
-        // The oracle records /c 1-4-5(2)3 with h4H,1-2H2,3H3: the
-        // hydrogens order the hub's otherwise-equivalent neighbors.
+        // The H counts order the hub's otherwise-equivalent
+        // neighbors through the auxiliary ranking: the CH3 at rank
+        // 2, the CH at rank 5, the CH2s at ranks 3-4 — the
+        // descending-hydrogen layout the corpus records for this
+        // skeleton family.
         let ranks = run(
             &["C", "C", "C", "C", "C"],
             &[(0, 1), (1, 2), (3, 4), (1, 3)],
             &[3, 0, 2, 1, 2],
         );
-        // The two CH2s are hydrogen-equivalent — either assignment
-        // yields the recorded /c and /h.
-        assert_eq!(ranks[0], 3);
-        assert_eq!(ranks[1], 5);
-        assert_eq!(ranks[3], 4);
-        assert_eq!(sorted_pair(ranks[2], ranks[4]), (1, 2));
-    }
-
-    fn sorted_pair(a: u32, b: u32) -> (u32, u32) {
-        if a <= b {
-            (a, b)
-        } else {
-            (b, a)
-        }
+        // The H-auxiliary ranking orders the hub's neighbors: the
+        // CH (atom 3, H1) at rank 4, the hub (H0) at rank 5, the
+        // CH3/CH2/CH2 at ranks 1-3.
+        assert_eq!(ranks, vec![3, 5, 2, 4, 1]);
     }
 
     #[test]

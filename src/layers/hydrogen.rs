@@ -183,8 +183,10 @@ mod tests {
     #[test]
     fn hydrogen_counts_break_connectivity_ties_like_the_oracle() {
         // The 2-methylbutadiene skeleton: the methyl and the two CH2s
-        // are connectivity-ambiguous; the oracle numbers the CH2s
-        // first (h4H,1-2H2,3H3).
+        // are connectivity-ambiguous; the terminal compare's hydrogen
+        // layer settles them as the oracle records (h4H,1-2H2,3H3 —
+        // the CH2s at ranks 1-2, the methyl at rank 3, the hub's CH
+        // at rank 4).
         let s = structure(
             vec![
                 atom("C", 0, 0),
