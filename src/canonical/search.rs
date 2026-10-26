@@ -31,11 +31,15 @@ pub fn base_symmetry(adjacency: &[Vec<usize>], invariants: &[(u16, u16)]) -> Vec
     symmetry
 }
 
-/// Final canonical rank (1-based) per atom.
+/// Final canonical rank (1-based) per atom. The mobile groups (rank
+/// free: count + member atoms) ride along as the terminal compare's
+/// final rows — the reference's t-group CT section, which settles
+/// the ties the connection table and the hydrogen layer leave equal.
 pub fn canonical_ranks(
     adjacency: &[Vec<usize>],
     invariants: &[(u16, u16)],
     hydrogens: &[u32],
+    groups: &[(u32, Vec<usize>)],
 ) -> Vec<u32> {
     let n = adjacency.len();
     let symmetry = base_symmetry(adjacency, invariants);
@@ -48,7 +52,7 @@ pub fn canonical_ranks(
     aux.refine(adjacency);
     let aux_rank: Vec<u32> = (0..n).map(|atom| aux.rank_of(atom)).collect();
 
-    let informed = search_stage_two(adjacency, &aux, &aux_rank, hydrogens);
+    let informed = search_stage_two(adjacency, &aux, &aux_rank, hydrogens, groups);
     (0..n).map(|atom| informed.rank_of(atom)).collect()
 }
 
@@ -57,8 +61,9 @@ pub fn canonical_table(
     adjacency: &[Vec<usize>],
     invariants: &[(u16, u16)],
     hydrogens: &[u32],
+    groups: &[(u32, Vec<usize>)],
 ) -> ConnectionTable {
-    let ranks = canonical_ranks(adjacency, invariants, hydrogens);
+    let ranks = canonical_ranks(adjacency, invariants, hydrogens, groups);
     ConnectionTable::build(&ranks, adjacency)
 }
 
@@ -162,6 +167,7 @@ fn search_stage_two(
     aux: &Partition,
     aux_rank: &[u32],
     hydrogens: &[u32],
+    groups: &[(u32, Vec<usize>)],
 ) -> Partition {
     let n = adjacency.len();
     let mut best: Option<Partition> = None;
@@ -172,6 +178,7 @@ fn search_stage_two(
         adjacency,
         aux_rank,
         hydrogens,
+        groups,
         &mut first,
         &mut best,
         &mut orbits,
@@ -179,11 +186,13 @@ fn search_stage_two(
     best.expect("a discrete partition is always reached")
 }
 
+#[allow(clippy::too_many_arguments)]
 fn descend_hinformed(
     partition: &Partition,
     adjacency: &[Vec<usize>],
     aux_rank: &[u32],
     hydrogens: &[u32],
+    groups: &[(u32, Vec<usize>)],
     first: &mut Option<Partition>,
     best: &mut Option<Partition>,
     orbits: &mut Orbits,
@@ -219,14 +228,34 @@ fn descend_hinformed(
                     .map(|atom| hydrogens[p.at_number()[atom]])
                     .collect()
             };
+            // The t-group CT rows: (count, ascending member ranks)
+            // per group — the compare's final section.
+            let rows = |p: &Partition| -> Vec<(u32, Vec<u32>)> {
+                let ranks = p.ranks();
+                groups
+                    .iter()
+                    .map(|(count, members)| {
+                        let mut member_ranks: Vec<u32> =
+                            members.iter().map(|&m| ranks[m]).collect();
+                        member_ranks.sort_unstable();
+                        (*count, member_ranks)
+                    })
+                    .collect()
+            };
             let better = match &best {
                 None => true,
                 Some(best_partition) => {
                     let best_table = ConnectionTable::build(best_partition.ranks(), adjacency);
                     match table.compare(&best_table) {
                         std::cmp::Ordering::Greater => true,
-                        std::cmp::Ordering::Equal => counts(partition) > counts(best_partition),
-                        _ => false,
+                        std::cmp::Ordering::Less => false,
+                        std::cmp::Ordering::Equal => {
+                            match counts(partition).cmp(&counts(best_partition)) {
+                                std::cmp::Ordering::Greater => true,
+                                std::cmp::Ordering::Less => false,
+                                std::cmp::Ordering::Equal => rows(partition) > rows(best_partition),
+                            }
+                        }
                     }
                 }
             };
@@ -247,7 +276,9 @@ fn descend_hinformed(
         }
         let mut branch = partition.clone();
         branch.individualize(adjacency, v);
-        descend_hinformed(&branch, adjacency, aux_rank, hydrogens, first, best, orbits);
+        descend_hinformed(
+            &branch, adjacency, aux_rank, hydrogens, groups, first, best, orbits,
+        );
     }
 }
 
@@ -265,7 +296,7 @@ mod tests {
         }
         let elements: Vec<String> = elements.iter().map(|s| s.to_string()).collect();
         let invariants = atom_invariants(&elements, &adjacency);
-        canonical_ranks(&adjacency, &invariants, hydrogens)
+        canonical_ranks(&adjacency, &invariants, hydrogens, &[])
     }
 
     fn table_of(elements: &[&str], bonds: &[(usize, usize)], hydrogens: &[u32]) -> Vec<u32> {
@@ -277,7 +308,7 @@ mod tests {
         }
         let elements: Vec<String> = elements.iter().map(|s| s.to_string()).collect();
         let invariants = atom_invariants(&elements, &adjacency);
-        canonical_table(&adjacency, &invariants, hydrogens)
+        canonical_table(&adjacency, &invariants, hydrogens, &[])
             .entries()
             .to_vec()
     }

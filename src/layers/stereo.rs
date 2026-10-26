@@ -16,7 +16,8 @@ fn segments_of(structure: &Structure) -> Vec<(char, String)> {
     let mask = canonical::tautomer::endpoint_mask(structure, &counts);
     let no_taut = canonical::tautomer::without_mobile_h(&counts, &mask);
     let symmetry = canonical::base_symmetry(&adjacency, &invariants);
-    let ranks = canonical::canonical_ranks(&adjacency, &invariants, &no_taut);
+    let groups = canonical::group_membership(structure, &counts);
+    let ranks = canonical::canonical_ranks(&adjacency, &invariants, &no_taut, &groups);
     canonical::stereo::segments(structure, &counts, &ranks, &symmetry)
 }
 
@@ -74,10 +75,12 @@ impl LayerEmitter for BLayer {
         let counts = crate::layers::standardization::adjusted_hydrogens(structure);
         let (adjacency, invariants) = canonical::graph_of(structure);
         let mask = canonical::tautomer::endpoint_mask(structure, &counts);
+        let groups = canonical::group_membership(structure, &counts);
         let ranks = canonical::canonical_ranks(
             &adjacency,
             &invariants,
             &canonical::tautomer::without_mobile_h(&counts, &mask),
+            &groups,
         );
         Ok(canonical::bond_stereo::segments(structure, &counts, &ranks)
             .into_iter()

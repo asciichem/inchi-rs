@@ -26,6 +26,7 @@ pub mod tautomer;
 pub use emit::connection_segment;
 pub use partition::Partition;
 pub use search::{base_symmetry, canonical_ranks, canonical_table};
+pub use tautomer::group_membership;
 
 use crate::graph::Structure;
 
