@@ -50,6 +50,72 @@ enum Role {
     Acceptor,
 }
 
+/// Atoms on a cycle: the endpoints of every non-bridge bond (DFS
+/// lowlink bridge finding).
+fn ring_atoms(structure: &Structure) -> Vec<bool> {
+    let n = structure.atoms.len();
+    let mut graph: Vec<Vec<(usize, usize)>> = vec![Vec::new(); n];
+    for (bond, &(from, to, _)) in structure.bonds.iter().enumerate() {
+        graph[from].push((to, bond));
+        graph[to].push((from, bond));
+    }
+    let mut disc = vec![usize::MAX; n];
+    let mut low = vec![0usize; n];
+    let mut is_bridge = vec![false; structure.bonds.len()];
+    let mut timer = 0usize;
+
+    fn visit(
+        atom: usize,
+        entered_by: Option<usize>,
+        graph: &[Vec<(usize, usize)>],
+        disc: &mut Vec<usize>,
+        low: &mut Vec<usize>,
+        is_bridge: &mut Vec<bool>,
+        timer: &mut usize,
+    ) {
+        disc[atom] = *timer;
+        low[atom] = *timer;
+        *timer += 1;
+        for &(next, bond) in &graph[atom] {
+            if entered_by == Some(bond) {
+                continue;
+            }
+            if disc[next] == usize::MAX {
+                visit(next, Some(bond), graph, disc, low, is_bridge, timer);
+                low[atom] = low[atom].min(low[next]);
+                if low[next] > disc[atom] {
+                    is_bridge[bond] = true;
+                }
+            } else {
+                low[atom] = low[atom].min(disc[next]);
+            }
+        }
+    }
+
+    for root in 0..n {
+        if disc[root] == usize::MAX {
+            visit(
+                root,
+                None,
+                &graph,
+                &mut disc,
+                &mut low,
+                &mut is_bridge,
+                &mut timer,
+            );
+        }
+    }
+    let mut in_ring = vec![false; n];
+    for (index, bridge) in is_bridge.iter().enumerate() {
+        if !bridge {
+            let (from, to, _) = structure.bonds[index];
+            in_ring[from] = true;
+            in_ring[to] = true;
+        }
+    }
+    in_ring
+}
+
 /// Cached per-atom structure facts the endpoint arithmetic needs.
 struct Context<'a> {
     structure: &'a Structure,
@@ -59,6 +125,8 @@ struct Context<'a> {
     aromatic: BTreeSet<usize>,
     /// Bond-order sums, doubled so aromatic 1.5 stays integral.
     bond_sum2: Vec<i32>,
+    /// Atoms on a cycle (endpoints of non-bridge bonds).
+    in_ring: Vec<bool>,
 }
 
 impl<'a> Context<'a> {
@@ -84,6 +152,7 @@ impl<'a> Context<'a> {
             bond_sum2[from] += order2;
             bond_sum2[to] += order2;
         }
+        let in_ring = ring_atoms(structure);
         Context {
             structure,
             hydrogens,
@@ -91,6 +160,7 @@ impl<'a> Context<'a> {
             bond_index,
             aromatic,
             bond_sum2,
+            in_ring,
         }
     }
 
@@ -172,20 +242,148 @@ pub fn without_mobile_h(hydrogens: &[u32], mask: &[bool]) -> Vec<u32> {
         .collect()
 }
 
+/// The registration state the templates mutate: group membership per
+/// atom (the reference's `at[].endpoint`) and the bonds marked
+/// tautomeric (`BOND_TAUTOM`). The marks are the transitive device —
+/// registering a group marks all its anchors' bonds, and a
+/// tautomeric bond lets its endpoint qualify as either role in
+/// later scans.
+#[derive(Default)]
+struct Registration {
+    group_of: Vec<Option<usize>>,
+    marks: BTreeSet<usize>,
+}
+
+impl Registration {
+    fn registered(&self, atom: usize) -> bool {
+        self.group_of[atom].is_some()
+    }
+
+    /// Merges the members into one group; `true` when the state
+    /// changed (a member was unregistered or two groups fused).
+    fn register(&mut self, members: &[usize]) -> bool {
+        let existing: Vec<usize> = members.iter().filter_map(|&m| self.group_of[m]).collect();
+        match existing.len() {
+            0 => {
+                let id = self.group_of.iter().flatten().max().map_or(0, |m| m + 1);
+                for &m in members {
+                    self.group_of[m] = Some(id);
+                }
+                true
+            }
+            1 => {
+                let id = existing[0];
+                let mut changed = false;
+                for &m in members {
+                    if self.group_of[m] != Some(id) {
+                        self.group_of[m] = Some(id);
+                        changed = true;
+                    }
+                }
+                changed
+            }
+            _ => {
+                let keep = *existing.iter().min().unwrap();
+                let absorbed: BTreeSet<usize> = existing.into_iter().collect();
+                let mut changed = false;
+                // Absorb every member of the fused groups, then add
+                // the new members themselves.
+                for group in self.group_of.iter_mut() {
+                    if let Some(id) = *group {
+                        if absorbed.contains(&id) && id != keep {
+                            *group = Some(keep);
+                            changed = true;
+                        }
+                    }
+                }
+                for &m in members {
+                    if self.group_of[m] != Some(keep) {
+                        self.group_of[m] = Some(keep);
+                        changed = true;
+                    }
+                }
+                changed
+            }
+        }
+    }
+}
+
+/// Builds the endpoint linkage: the templates run as registration
+/// rounds — anchors, then the shift walks — each registering groups
+/// and re-marking bonds, to a fixpoint. The returned adjacency joins
+/// every pair of co-members.
 fn build_links(context: &Context) -> Vec<BTreeSet<usize>> {
     let n = context.structure.atoms.len();
+    let mut state = Registration {
+        group_of: vec![None; n],
+        marks: BTreeSet::new(),
+    };
+    for _ in 0..8 {
+        let mut changed = registration_round(context, &mut state);
+        if !changed {
+            changed = walk_round(context, &mut state);
+        }
+        if !changed {
+            break;
+        }
+    }
+    // Adjacency over co-membership (components() then yields the
+    // groups; empty ones drop).
+    let mut members: Vec<Vec<usize>> = vec![Vec::new(); n];
+    for (atom, group) in state.group_of.iter().enumerate() {
+        if let Some(group) = group {
+            members[*group].push(atom);
+        }
+    }
     let mut linked: Vec<BTreeSet<usize>> = vec![BTreeSet::new(); n];
+    for group in members {
+        for &x in &group {
+            for &y in &group {
+                if x != y {
+                    linked[x].insert(y);
+                    linked[y].insert(x);
+                }
+            }
+        }
+    }
+    linked
+}
 
-    // The 1,3 template: an anchor holding both a donor and an
-    // acceptor joins all of its endpoint neighbors into one group.
-    // A real single bond counts toward the donor role only when the
-    // endpoint actually carries mobile H; an aromatic bond takes the
-    // endpoint's arithmetic role as either. The anchor is uncharged —
-    // the reference's tautomeric centerpoint carries no formal
-    // charge (a nitrate's N+ never groups its oxygens; the
-    // aci-anion's neutral N does).
+/// One registration round: the 1,3 anchors (with the tautomeric
+/// marks feeding the classification) and the shift walks.
+fn registration_round(context: &Context, state: &mut Registration) -> bool {
+    let n = context.structure.atoms.len();
+    let mut changed = false;
+
+    // The 1,3 template: an endpoint reaches its centerpoint through
+    // a π bond (double, aromatic, or already-marked tautomeric); the
+    // centerpoint's other endpoint neighbors join. A single bond is
+    // the donor side only with mobile H or membership; a double bond
+    // is the acceptor side; a π/tautomeric bond reads either role
+    // from the arithmetic or from membership. Registering marks ALL
+    // the centerpoint's bonds — the transitive device that lets the
+    // next round admit the mark's other end.
     for anchor in 0..n {
         if context.structure.atoms[anchor].charge != 0 {
+            continue;
+        }
+        // The anchor scans only when some endpoint reaches it
+        // through a π-class bond.
+        let mut reachable = false;
+        for &(neighbor, kind) in &context.neighbors[anchor] {
+            if context.endpoint(neighbor).is_some()
+                && (kind == 2
+                    || context.is_aromatic(anchor, neighbor)
+                    || context
+                        .bond_index
+                        .get(&(anchor.min(neighbor), anchor.max(neighbor)))
+                        .is_some_and(|bond| state.marks.contains(bond)))
+            {
+                reachable = true;
+                break;
+            }
+        }
+        if !reachable {
             continue;
         }
         let mut ends: Vec<usize> = Vec::new();
@@ -193,77 +391,85 @@ fn build_links(context: &Context) -> Vec<BTreeSet<usize>> {
         let mut acceptors = 0;
         let mut any_mobile = false;
         for &(neighbor, kind) in &context.neighbors[anchor] {
-            let Some(role) = context.endpoint(neighbor) else {
+            let Some(arithmetic) = context.endpoint(neighbor) else {
                 continue;
             };
+            let registered = state.registered(neighbor);
+            let marked = state
+                .marks
+                .contains(&context.bond_index[&(anchor.min(neighbor), anchor.max(neighbor))]);
             let aromatic = context.is_aromatic(anchor, neighbor);
-            let classified = if aromatic {
-                role
+            let (classified, possible) = if aromatic || marked {
+                // The tautom branch admits via the arithmetic itself:
+                // donor iff cDonor, acceptor iff cNeutralBondsValence
+                // > valence — both true when the endpoint arithmetic
+                // classified the atom at all.
+                (arithmetic, true)
             } else {
                 match kind {
-                    1 if context.mobile(neighbor) > 0 => Role::Donor,
-                    2 => Role::Acceptor,
+                    1 => {
+                        let donor = context.mobile(neighbor) > 0 || registered;
+                        (Role::Donor, donor)
+                    }
+                    2 => (Role::Acceptor, true),
                     _ => continue,
                 }
             };
+            if !possible {
+                continue;
+            }
             match classified {
                 Role::Donor => donors += 1,
                 Role::Acceptor => acceptors += 1,
             }
-            any_mobile |= context.mobile(neighbor) > 0;
+            any_mobile |= context.mobile(neighbor) > 0 || registered;
             ends.push(neighbor);
         }
         if ends.len() > 1 && donors > 0 && acceptors > 0 && any_mobile {
-            for &x in &ends {
-                for &y in &ends {
-                    if x != y {
-                        linked[x].insert(y);
-                        linked[y].insert(x);
-                    }
-                }
+            changed |= state.register(&ends);
+            // SetTautomericBonds marks only the bonds to admitted
+            // endpoints, never the centerpoint's other bonds.
+            for &end in &ends {
+                state
+                    .marks
+                    .insert(context.bond_index[&(anchor.min(end), anchor.max(end))]);
             }
         }
     }
 
-    // Shift walks from each endpoint toward its complementary role:
-    // a donor walks single-bond-first (the H leaves along its own
-    // single bond), an acceptor walks double/aromatic-bond-first.
-    // The 1,5 template terminates on a double bond — a bare
-    // single-terminated acceptor is not one (phenol OH's stay fixed).
+    changed
+}
+
+/// The shift-walk templates, run only on a pass whose 1,3 phase
+/// registered nothing (the reference's `!tot_changes` gate: one
+/// MarkTautomerGroups call does the anchors, and only a no-change
+/// call falls through to the walks and ring templates). From each
+/// endpoint toward its complementary role: a donor walks
+/// single-bond-first (the H leaves along its own single bond), an
+/// acceptor walks double/aromatic-bond-first. The 1,5 template
+/// terminates on a double bond — a bare single-terminated acceptor
+/// is not one (phenol OH's stay fixed) — and needs one endpoint
+/// OFF-ring (TAUT_15_NON_RING): two ring-bound endpoints pair only
+/// through their own ring templates.
+fn walk_round(context: &Context, state: &mut Registration) -> bool {
+    let n = context.structure.atoms.len();
+    let mut changed = false;
     for start in 0..n {
         let Some(role) = context.endpoint(start) else {
             continue;
         };
         match role {
             Role::Donor => {
-                walk_path(
-                    context,
-                    start,
-                    start,
-                    1,
-                    Far::Acceptor,
-                    2,
-                    None,
-                    &mut linked,
-                );
-                walk_path(
-                    context,
-                    start,
-                    start,
-                    1,
-                    Far::Acceptor,
-                    4,
-                    None,
-                    &mut linked,
-                );
+                changed |= walk_path(context, start, start, 1, Far::Acceptor, 2, 2, None, state);
+                changed |= walk_path(context, start, start, 1, Far::Acceptor, 4, 4, None, state);
             }
             Role::Acceptor => {
-                walk_path(context, start, start, 2, Far::Donor, 2, None, &mut linked);
-                walk_path(context, start, start, 2, Far::Donor, 4, None, &mut linked);
+                changed |= walk_path(context, start, start, 2, Far::Donor, 2, 2, None, state);
+                changed |= walk_path(context, start, start, 2, Far::Donor, 4, 4, None, state);
             }
         }
     }
-    linked
+    changed
 }
 
 /// What the far terminal of a shift walk must be: the complementary
@@ -317,11 +523,13 @@ fn walk_path(
     parity: u32,
     far: Far,
     remaining: usize,
+    walk_len: usize,
     previous: Option<Step>,
-    linked: &mut Vec<BTreeSet<usize>>,
-) {
+    state: &mut Registration,
+) -> bool {
+    let mut changed = false;
     if remaining == 0 {
-        return;
+        return changed;
     }
     for (next, kind) in &context.neighbors[atom] {
         let next = *next;
@@ -345,6 +553,12 @@ fn walk_path(
             if next == start || context.endpoint(next) != required_role(far) {
                 continue;
             }
+            // TAUT_15_NON_RING: a 1,5 shift needs one endpoint
+            // off-ring — two ring-bound endpoints pair only through
+            // their own ring templates.
+            if walk_len == 4 && context.in_ring[start] && context.in_ring[next] {
+                continue;
+            }
             let reached = match far {
                 // The walk's far acceptor is met by a real double — a
                 // carbonyl met across an aromatic run is not a shift
@@ -355,8 +569,7 @@ fn walk_path(
                 Far::Donor => class == BondClass::Single,
             };
             if reached {
-                linked[start].insert(next);
-                linked[next].insert(start);
+                changed |= state.register(&[start, next]);
             }
             continue;
         }
@@ -364,17 +577,19 @@ fn walk_path(
             None => Step::OwnTerminal,
             Some(_) => Step::Over(class),
         };
-        walk_path(
+        changed |= walk_path(
             context,
             next,
             start,
             if parity == 1 { 2 } else { 1 },
             far,
             remaining - 1,
+            walk_len,
             Some(step),
-            linked,
+            state,
         );
     }
+    changed
 }
 
 fn required_role(far: Far) -> Option<Role> {
