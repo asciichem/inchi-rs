@@ -29,15 +29,24 @@ struct Edge {
     forbidden: bool,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    Atom,
+    CGroup,
+    TGroup,
+    Temp,
+}
+
 #[derive(Clone)]
 struct Vertex {
     st_cap: i32,
     st_flow: i32,
     st_path: bool,
-    /// Bond edges first (input order), the t-group edge last; a temp
-    /// vertex holds the single edge to its host.
+    /// Bond edges first (input order), then the c-group edge (if
+    /// any), then the t-group edge; a temp vertex holds the single
+    /// edge to its host.
     adj: Vec<u32>,
-    group: bool,
+    kind: Kind,
 }
 
 /// The inputs one [`Network`] build needs: everything is expressed in
@@ -50,6 +59,11 @@ pub(crate) struct Build<'a> {
     /// Per atom, parallel to `bond_adjacency`: the bond reads
     /// single-like to the t-group capacity raise.
     pub single_like: &'a [Vec<bool>],
+    /// The charge-group membership (at[].c_point) and which member
+    /// carries the moveable charge (its c-group edge flows 0, the
+    /// neutral members' flow 1).
+    pub c_point_of: &'a [Option<usize>],
+    pub c_charged: &'a [bool],
 }
 
 /// Which endpoints may play the donor (single-bond / H-owner) or
@@ -78,7 +92,7 @@ impl Network {
                 st_flow: 0,
                 st_path: false,
                 adj: Vec::new(),
-                group: false,
+                kind: Kind::Atom,
             })
             .collect();
         let mut edges: Vec<Edge> = Vec::new();
@@ -109,6 +123,46 @@ impl Network {
             }
         }
 
+        // AddCGroups2BnStruct runs before AddTGroups2BnStruct: the
+        // c-group vertices sit between the atoms and the t-groups.
+        let mut c_groups: Vec<usize> = spec.c_point_of.iter().flatten().copied().collect();
+        c_groups.sort_unstable();
+        c_groups.dedup();
+        for _ in 0..c_groups.len() {
+            verts.push(Vertex {
+                st_cap: 0,
+                st_flow: 0,
+                st_path: false,
+                adj: Vec::new(),
+                kind: Kind::CGroup,
+            });
+        }
+        let c_group_vertex = |gid: usize| n + c_groups.iter().position(|&g| g == gid).unwrap();
+        for point in 0..n {
+            let Some(gid) = spec.c_point_of.get(point).and_then(|g| *g) else {
+                continue;
+            };
+            let host = c_group_vertex(gid);
+            let charged = spec.c_charged[point];
+            let index = edges.len() as u32;
+            edges.push(Edge {
+                a: point as u32,
+                b: host as u32,
+                cap: 1,
+                flow: !charged as i32,
+                path: false,
+                forbidden: false,
+            });
+            verts[point].adj.push(index);
+            verts[host].adj.push(index);
+            if !charged {
+                verts[host].st_cap += 1;
+                verts[host].st_flow += 1;
+                verts[point].st_cap += 1;
+                verts[point].st_flow += 1;
+            }
+        }
+
         let mut groups: Vec<usize> = spec.group_of.iter().flatten().copied().collect();
         groups.sort_unstable();
         groups.dedup();
@@ -118,10 +172,11 @@ impl Network {
                 st_flow: 0,
                 st_path: false,
                 adj: Vec::new(),
-                group: true,
+                kind: Kind::TGroup,
             });
         }
-        let group_vertex = |gid: usize| n + groups.iter().position(|&g| g == gid).unwrap();
+        let group_vertex =
+            |gid: usize| n + c_groups.len() + groups.iter().position(|&g| g == gid).unwrap();
         for endpoint in 0..n {
             let Some(gid) = spec.group_of.get(endpoint).and_then(|g| *g) else {
                 continue;
@@ -696,7 +751,7 @@ fn add_new_vertex(net: &mut Network, host: usize, ndots: &mut i32) {
         st_flow: 0,
         st_path: false,
         adj: Vec::new(),
-        group: false,
+        kind: Kind::Temp,
     });
     let index = net.edges.len() as u32;
     net.edges.push(Edge {
@@ -727,18 +782,18 @@ fn add_st_cap(net: &mut Network, v1: usize, skip: usize, ndots: &mut i32) {
     for edge in adj {
         let edge = edge as usize;
         let other = net.other(edge, v1);
-        if other == skip || net.verts[other].group {
+        if other == skip || net.verts[other].kind != Kind::Atom {
             continue;
         }
         net.edges[edge].cap = net.verts[other].st_cap.min(cap).min(MAX_BOND_EDGE_CAP);
     }
 }
 
-/// The group edge of a registered atom: its adjacency's last entry
-/// (GetEdgeToGroupVertex scans from the end for a t-group neighbor).
-fn group_edge(net: &Network, atom: usize) -> Option<usize> {
+/// The t-group or c-group edge of an atom: GetEdgeToGroupVertex
+/// scans the adjacency from the end for a neighbor of the exact type.
+fn group_edge_of(net: &Network, atom: usize, kind: Kind) -> Option<usize> {
     let vert = &net.verts[atom];
-    if vert.group {
+    if vert.kind != Kind::Atom {
         return None;
     }
     vert.adj
@@ -746,7 +801,7 @@ fn group_edge(net: &Network, atom: usize) -> Option<usize> {
         .rev()
         .copied()
         .map(|edge| edge as usize)
-        .find(|&edge| net.verts[net.other(edge, atom)].group)
+        .find(|&edge| net.verts[net.other(edge, atom)].kind == kind)
 }
 
 /// bExistsAltPath under ALT_PATH_MODE_TAUTOM: the role precheck, the
@@ -761,13 +816,26 @@ fn exists(net: &mut Network, roles: &Roles, double_side: usize, single_side: usi
         return false;
     }
     let mut ndots = 0;
-    if let Some(edge) = group_edge(net, single_side) {
+    // Prohibit charge movement: pin each side's c-group edge at flow 1.
+    if let Some(edge) = group_edge_of(net, single_side, Kind::CGroup) {
         let Some(ret) = set_flow_to_check_one_bond(net, edge, 1) else {
             return false;
         };
         ndots += ret;
     }
-    if let Some(edge) = group_edge(net, double_side) {
+    if let Some(edge) = group_edge_of(net, double_side, Kind::CGroup) {
+        let Some(ret) = set_flow_to_check_one_bond(net, edge, 1) else {
+            return false;
+        };
+        ndots += ret;
+    }
+    if let Some(edge) = group_edge_of(net, single_side, Kind::TGroup) {
+        let Some(ret) = set_flow_to_check_one_bond(net, edge, 1) else {
+            return false;
+        };
+        ndots += ret;
+    }
+    if let Some(edge) = group_edge_of(net, double_side, Kind::TGroup) {
         let Some(ret) = set_flow_to_check_one_bond(net, edge, 0) else {
             return false;
         };
@@ -779,6 +847,52 @@ fn exists(net: &mut Network, roles: &Roles, double_side: usize, single_side: usi
         return false;
     }
 
+    let mut sum = 0;
+    for _ in 0..MAX_PASSES {
+        let delta = balanced_network_search(net);
+        if delta <= 0 {
+            return delta == 0 && 2 * sum >= ndots;
+        }
+        sum += delta;
+    }
+    2 * sum >= ndots
+}
+
+/// bExistsAltPath under ALT_PATH_MODE_CHARGE: no role precheck, the
+/// generic setup (the H dot on the charged side, an extra st-cap on
+/// the neutral side), and the changed atom-atom bonds reported for
+/// the BOND_ALTERED marks. Success mirrors the reference's return:
+/// bit 0 = found, and `3` (bits 0|1) when bonds moved.
+pub(crate) fn charge_alt_path(
+    net: &Network,
+    charged: usize,
+    neutral: usize,
+) -> (bool, Vec<(usize, usize)>) {
+    let before: Vec<i32> = net.edges.iter().map(|edge| edge.flow).collect();
+    let mut work = net.clone();
+    let found = exists_generic(&mut work, charged, neutral);
+    let moved: Vec<(usize, usize)> = (0..net.edges.len())
+        .filter(|&index| work.edges[index].flow != before[index])
+        .map(|index| {
+            let edge = &net.edges[index];
+            (edge.a.min(edge.b) as usize, edge.a.max(edge.b) as usize)
+        })
+        .collect();
+    (found, moved)
+}
+
+/// The generic-mode existence check: no role precheck, the temp dot
+/// on `double_side`, the extra st-cap on `single_side`.
+fn exists_generic(net: &mut Network, double_side: usize, single_side: usize) -> bool {
+    if net.verts[double_side].st_flow == 0 {
+        return false;
+    }
+    let mut ndots = 0;
+    add_new_vertex(net, double_side, &mut ndots);
+    add_st_cap(net, single_side, double_side, &mut ndots);
+    if ndots < 0 || ndots % 2 != 0 {
+        return false;
+    }
     let mut sum = 0;
     for _ in 0..MAX_PASSES {
         let delta = balanced_network_search(net);
@@ -830,6 +944,8 @@ mod tests {
             group_of,
             donor,
             single_like: &single_like,
+            c_point_of: &[None; 0],
+            c_charged: &[false; 0],
         })
     }
 
