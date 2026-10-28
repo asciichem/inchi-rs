@@ -42,7 +42,11 @@ fn main() {
             if assembled == case["inchi"].as_str().unwrap_or("") {
                 passing.push(id);
             } else {
-                failing_triaged.push((id, assembled, case["inchi"].as_str().unwrap_or("").to_string()));
+                failing_triaged.push((
+                    id,
+                    assembled,
+                    case["inchi"].as_str().unwrap_or("").to_string(),
+                ));
             }
         }
     }

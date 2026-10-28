@@ -14,6 +14,8 @@
 //! tables equal to an already-found terminal.
 
 pub mod aromatic;
+pub mod blossom;
+mod bns;
 pub mod bond_stereo;
 pub mod emit;
 mod invariants;
@@ -21,9 +23,7 @@ mod partition;
 mod search;
 pub mod stereo;
 mod table;
-pub mod blossom;
 pub mod tautomer;
-mod bns;
 
 pub use emit::connection_segment;
 pub use partition::Partition;

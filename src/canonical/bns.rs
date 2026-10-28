@@ -88,7 +88,9 @@ impl Network {
                 if made.contains_key(&(i.min(neigh), i.max(neigh))) {
                     continue;
                 }
-                let cap = spec.max_flow[i].min(spec.max_flow[neigh]).min(MAX_BOND_EDGE_CAP);
+                let cap = spec.max_flow[i]
+                    .min(spec.max_flow[neigh])
+                    .min(MAX_BOND_EDGE_CAP);
                 let index = edges.len() as u32;
                 edges.push(Edge {
                     a: i as u32,
@@ -634,7 +636,12 @@ fn set_flow_to_check_one_bond(net: &mut Network, iedge: usize, flow: i32) -> Opt
 
         for &(host, delta) in &[(v1, d1), (v2, d2)] {
             let mut delta = delta;
-            let adjacency: Vec<usize> = net.verts[host].adj.iter().copied().map(|e| e as usize).collect();
+            let adjacency: Vec<usize> = net.verts[host]
+                .adj
+                .iter()
+                .copied()
+                .map(|e| e as usize)
+                .collect();
             for &edge in &adjacency {
                 if delta == 0 {
                     break;
@@ -730,8 +737,7 @@ fn group_edge(net: &Network, atom: usize) -> Option<usize> {
     if vert.group {
         return None;
     }
-    vert
-        .adj
+    vert.adj
         .iter()
         .rev()
         .copied()
@@ -781,12 +787,7 @@ fn exists(net: &mut Network, roles: &Roles, double_side: usize, single_side: usi
 }
 
 /// bExistsAnyAltPath: either direction of the (double, single) pair.
-pub(crate) fn any_alt_path(
-    net: &Network,
-    roles: &Roles,
-    first: usize,
-    second: usize,
-) -> bool {
+pub(crate) fn any_alt_path(net: &Network, roles: &Roles, first: usize, second: usize) -> bool {
     let mut forward = net.clone();
     if exists(&mut forward, roles, first, second) {
         return true;
@@ -876,5 +877,3 @@ mod tests {
         assert!(!any_alt_path(&net, &roles, 0, 1));
     }
 }
-
-

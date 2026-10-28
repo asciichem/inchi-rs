@@ -388,11 +388,14 @@ impl<'a> Context<'a> {
             .map(|list| {
                 list.iter()
                     .map(|&(neigh, kind)| {
-                        (neigh, match kind {
-                            2 => 1,
-                            3 => 2,
-                            _ => 0,
-                        })
+                        (
+                            neigh,
+                            match kind {
+                                2 => 1,
+                                3 => 2,
+                                _ => 0,
+                            },
+                        )
                     })
                     .collect()
             })
@@ -423,14 +426,10 @@ impl<'a> Context<'a> {
         });
         let roles = super::bns::Roles {
             donor_ok: (0..n)
-                .map(|atom| {
-                    state.registered(atom) || self.endpoint(atom) == Some(Role::Donor)
-                })
+                .map(|atom| state.registered(atom) || self.endpoint(atom) == Some(Role::Donor))
                 .collect(),
             acceptor_ok: (0..n)
-                .map(|atom| {
-                    state.registered(atom) || self.endpoint(atom) == Some(Role::Acceptor)
-                })
+                .map(|atom| state.registered(atom) || self.endpoint(atom) == Some(Role::Acceptor))
                 .collect(),
         };
         super::bns::any_alt_path(&net, &roles, first, second)
@@ -630,10 +629,7 @@ fn registration_round(context: &Context, state: &mut Registration) -> bool {
                 let registered = state.registered(endpoint);
                 let mobile = context.mobile(endpoint) > 0 || registered;
                 let (donor_side, acceptor_side) = if non_taut {
-                    (
-                        bond == BondType::Single && mobile,
-                        bond == BondType::Double,
-                    )
+                    (bond == BondType::Single && mobile, bond == BondType::Double)
                 } else {
                     (
                         registered || arithmetic == Role::Donor,
@@ -675,9 +671,7 @@ fn registration_round(context: &Context, state: &mut Registration) -> bool {
                 let mut classes: Vec<(usize, Vec<usize>)> = Vec::new();
                 for (position, &atom) in partitioned.ends.iter().enumerate() {
                     let equ = partitioned.equ[position];
-                    let entry = classes
-                        .iter_mut()
-                        .find(|(label, _)| *label == equ);
+                    let entry = classes.iter_mut().find(|(label, _)| *label == equ);
                     let entry = match entry {
                         Some(entry) => entry,
                         None => {
@@ -700,8 +694,7 @@ fn registration_round(context: &Context, state: &mut Registration) -> bool {
             }
             // SetTautomericBonds on the surviving centerpoint bonds.
             for &atom in &partitioned.ends {
-                let bond = context.bond_index
-                    [&(centerpoint.min(atom), centerpoint.max(atom))];
+                let bond = context.bond_index[&(centerpoint.min(atom), centerpoint.max(atom))];
                 changed |= state.marks.insert(bond);
             }
         }
@@ -719,7 +712,10 @@ fn find_accessible_end_points(
     state: &Registration,
     ends: &[usize],
 ) -> Partitioned {
-    let mut equ: Vec<usize> = ends.iter().map(|&e| state.group_of[e].unwrap_or(0)).collect();
+    let mut equ: Vec<usize> = ends
+        .iter()
+        .map(|&e| state.group_of[e].unwrap_or(0))
+        .collect();
     // Representatives of the known groups, first encounter first,
     // with the slot label each carries.
     let mut reps: Vec<(usize, usize)> = Vec::new();
@@ -813,7 +809,12 @@ fn find_accessible_end_points(
     let mut partitioned = Partitioned::default();
     for (index, &atom) in ends.iter().enumerate() {
         if equ[index] == 0
-            || ends.iter().zip(&equ).filter(|(_, label)| *label == &equ[index]).count() <= 1
+            || ends
+                .iter()
+                .zip(&equ)
+                .filter(|(_, label)| *label == &equ[index])
+                .count()
+                <= 1
         {
             continue;
         }
@@ -1381,15 +1382,13 @@ fn check_tropolone(
             added = true;
         }
     }
-    let mut chain_bonds: Vec<(usize, usize)> = vec![(i2, endpoint2), (i2, path[1]), (i1, endpoint1)];
+    let mut chain_bonds: Vec<(usize, usize)> =
+        vec![(i2, endpoint2), (i2, path[1]), (i1, endpoint1)];
     for index in 1..bonds.len() - 1 {
         chain_bonds.insert(2 + index - 1, (path[index + 1], path[index]));
     }
     for ((center, other), kind) in chain_bonds.into_iter().zip(&chain) {
-        if !matches!(
-            kind,
-            BondType::Single | BondType::Double | BondType::Altern
-        ) {
+        if !matches!(kind, BondType::Single | BondType::Double | BondType::Altern) {
             continue;
         }
         let index = context.bond_index[&(center.min(other), center.max(other))];
@@ -1402,8 +1401,7 @@ fn check_tropolone(
         return false;
     }
     // A pair already in one group needs no confirmation.
-    if state.group_of[endpoint2].is_some()
-        && state.group_of[endpoint2] == state.group_of[endpoint1]
+    if state.group_of[endpoint2].is_some() && state.group_of[endpoint2] == state.group_of[endpoint1]
     {
         find.found += 1;
         return true;
