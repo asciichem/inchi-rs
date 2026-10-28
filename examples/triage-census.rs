@@ -22,6 +22,7 @@ fn main() {
         .collect();
     files.sort();
     let mut passing = Vec::new();
+    let mut failing_triaged = Vec::new();
     let mut total = 0usize;
     for file in files {
         let parsed: Vec<serde_json::Value> =
@@ -40,11 +41,21 @@ fn main() {
             };
             if assembled == case["inchi"].as_str().unwrap_or("") {
                 passing.push(id);
+            } else {
+                failing_triaged.push((
+                    id,
+                    assembled,
+                    case["inchi"].as_str().unwrap_or("").to_string(),
+                ));
             }
         }
     }
     println!("triaged {total}, now passing {}:", passing.len());
     for id in &passing {
         println!("  {id}");
+    }
+    println!("triaged, still failing {}:", failing_triaged.len());
+    for (id, assembled, oracle) in &failing_triaged {
+        println!("  {id}\n    ours   {assembled}\n    oracle {oracle}");
     }
 }
