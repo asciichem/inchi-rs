@@ -60,6 +60,7 @@ impl Matching {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn mark_path(
         matched: &[usize],
         parent: &mut [usize],
