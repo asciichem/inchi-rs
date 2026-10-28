@@ -234,6 +234,66 @@ fn ring_systems(structure: &Structure) -> RingSystems {
     }
 }
 
+/// The reference's SetForbiddenEdges under BNS_PROTECT_FROM_TAUT: a
+/// carbonyl carbon carrying two valence-1 oxygens whose bond orders
+/// sum to 3 (the acetyl pattern) or a nitro-style nitrogen carrying
+/// two valence-1 oxygens summing to 3 or 4 forbids its single-bonded
+/// non-oxygen bond — the bond the templates may never cross
+/// (ALLOWED_EDGE) and the network may never route.
+fn forbidden_edges(
+    structure: &Structure,
+    neighbors: &[Vec<(usize, u32)>],
+    bond_index: &HashMap<(usize, usize), usize>,
+) -> BTreeSet<usize> {
+    // Bond values as AllocateAndInitBnStruct leaves them: aromatic
+    // input reads single.
+    let value = |kind: u32| match kind {
+        2 => 2,
+        3 => 3,
+        _ => 1,
+    };
+    let mut forbidden = BTreeSet::new();
+    for center in 0..structure.atoms.len() {
+        let element = structure.atoms[center].element.as_str();
+        let degree = neighbors[center].len();
+        let cbv = neighbors[center]
+            .iter()
+            .map(|&(_, kind)| value(kind))
+            .sum::<i32>();
+        let wanted_o_sum: Option<i32> = match (element, degree, cbv) {
+            ("C", 3, 4) => Some(3),
+            ("N", 3, 4) => Some(3),
+            ("N", 3, 5) => Some(4),
+            _ => None,
+        };
+        let Some(wanted_o_sum) = wanted_o_sum else {
+            continue;
+        };
+        let (mut oxy_sum, mut oxy_count) = (0, 0);
+        let mut other: Option<(usize, u32)> = None;
+        for &(neigh, kind) in &neighbors[center] {
+            if structure.atoms[neigh].element == "O" && neighbors[neigh].len() == 1 {
+                oxy_sum += value(kind);
+                oxy_count += 1;
+            } else if other.is_none() {
+                other = Some((neigh, kind));
+            } else {
+                other = None;
+                break;
+            }
+        }
+        let Some((neigh, kind)) = other else {
+            continue;
+        };
+        if oxy_count == 2 && oxy_sum == wanted_o_sum && value(kind) == 1 {
+            if let Some(&index) = bond_index.get(&(center.min(neigh), center.max(neigh))) {
+                forbidden.insert(index);
+            }
+        }
+    }
+    forbidden
+}
+
 /// Cached per-atom structure facts the endpoint arithmetic needs.
 struct Context<'a> {
     structure: &'a Structure,
@@ -248,6 +308,10 @@ struct Context<'a> {
     bond_sum2: Vec<i32>,
     /// The MarkRingSystemsInp perception the templates scan.
     rings: RingSystems,
+    /// The reference's SetForbiddenEdges (BNS_PROTECT_FROM_TAUT):
+    /// acetyl-carbon and nitro-nitrogen bonds the tautomer machinery
+    /// may never cross (ALLOWED_EDGE) nor the network route.
+    forbidden: BTreeSet<usize>,
 }
 
 impl<'a> Context<'a> {
@@ -272,6 +336,7 @@ impl<'a> Context<'a> {
             bond_sum2[to] += order2;
         }
         let rings = ring_systems(structure);
+        let forbidden = forbidden_edges(structure, &neighbors, &bond_index);
         Context {
             structure,
             hydrogens,
@@ -280,7 +345,16 @@ impl<'a> Context<'a> {
             aromatic,
             bond_sum2,
             rings,
+            forbidden,
         }
+    }
+
+    /// The reference's `ALLOWED_EDGE`: false when the bond carries a
+    /// SetForbiddenEdges mark.
+    fn allowed_edge(&self, a: usize, b: usize) -> bool {
+        self.bond_index
+            .get(&(a.min(b), a.max(b)))
+            .is_none_or(|index| !self.forbidden.contains(index))
     }
 
     /// The reference's `nGetEndpointInfo`.
@@ -382,11 +456,10 @@ impl<'a> Context<'a> {
 
     fn alt_path_exists_traced(&self, state: &Registration, first: usize, second: usize) -> bool {
         let n = self.structure.atoms.len();
-        let bond_adjacency: Vec<Vec<(usize, i32)>> = self
-            .neighbors
-            .iter()
-            .map(|list| {
-                list.iter()
+        let bond_adjacency: Vec<Vec<(usize, i32, bool)>> = (0..n)
+            .map(|atom| {
+                self.neighbors[atom]
+                    .iter()
                     .map(|&(neigh, kind)| {
                         (
                             neigh,
@@ -395,6 +468,7 @@ impl<'a> Context<'a> {
                                 3 => 2,
                                 _ => 0,
                             },
+                            !self.allowed_edge(atom, neigh),
                         )
                     })
                     .collect()
@@ -601,6 +675,9 @@ fn registration_round(context: &Context, state: &mut Registration) -> bool {
             continue;
         }
         for &(centerpoint, _) in &context.neighbors[start] {
+            if !context.allowed_edge(start, centerpoint) {
+                continue;
+            }
             let anchor_bond = context.bond_type(state, start, centerpoint);
             if !matches!(
                 anchor_bond,
@@ -617,6 +694,9 @@ fn registration_round(context: &Context, state: &mut Registration) -> bool {
             let mut acceptors = 0u32;
             let mut possible_mobile = 0u32;
             for &(endpoint, _) in &context.neighbors[centerpoint] {
+                if !context.allowed_edge(centerpoint, endpoint) {
+                    continue;
+                }
                 let bond = context.bond_type(state, centerpoint, endpoint);
                 let non_taut = match bond {
                     BondType::Single | BondType::Double => true,

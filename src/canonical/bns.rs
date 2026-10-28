@@ -26,6 +26,7 @@ struct Edge {
     cap: i32,
     flow: i32,
     path: bool,
+    forbidden: bool,
 }
 
 #[derive(Clone)]
@@ -42,7 +43,7 @@ struct Vertex {
 /// The inputs one [`Network`] build needs: everything is expressed in
 /// structure terms so this module stays free of the tautomer context.
 pub(crate) struct Build<'a> {
-    pub bond_adjacency: &'a [Vec<(usize, i32)>],
+    pub bond_adjacency: &'a [Vec<(usize, i32, bool)>],
     pub max_flow: &'a [i32],
     pub group_of: &'a [Option<usize>],
     pub donor: &'a [bool],
@@ -84,7 +85,7 @@ impl Network {
         let mut made: std::collections::HashMap<(usize, usize), u32> =
             std::collections::HashMap::new();
         for i in 0..n {
-            for &(neigh, flow) in &spec.bond_adjacency[i] {
+            for &(neigh, flow, forbidden) in &spec.bond_adjacency[i] {
                 if made.contains_key(&(i.min(neigh), i.max(neigh))) {
                     continue;
                 }
@@ -98,6 +99,7 @@ impl Network {
                     cap,
                     flow,
                     path: false,
+                    forbidden,
                 });
                 made.insert((i.min(neigh), i.max(neigh)), index);
                 verts[i].st_flow += flow;
@@ -128,7 +130,7 @@ impl Network {
             // Capacity raise: a zero-capacity bond of the endpoint to a
             // neighbor with valence slack becomes movable when it reads
             // single-like.
-            for (position, &(neigh, _)) in spec.bond_adjacency[endpoint].iter().enumerate() {
+            for (position, &(neigh, _, _)) in spec.bond_adjacency[endpoint].iter().enumerate() {
                 let index = made[&(endpoint.min(neigh), endpoint.max(neigh))] as usize;
                 if edges[index].cap == 0
                     && verts[neigh].st_cap >= 1
@@ -145,6 +147,7 @@ impl Network {
                 cap: 1,
                 flow: donor as i32,
                 path: false,
+                forbidden: false,
             });
             verts[endpoint].adj.push(index);
             verts[host].adj.push(index);
@@ -187,7 +190,7 @@ impl Network {
         if i >= 0 {
             if index > 0 {
                 let edge = self.verts[(i / 2) as usize].adj[(index - 1) as usize] as usize;
-                if self.edges[edge].cap == 0 {
+                if self.edges[edge].cap == 0 || self.edges[edge].forbidden {
                     return None;
                 }
                 let n12 = (self.edges[edge].a ^ self.edges[edge].b) as i32;
@@ -646,7 +649,7 @@ fn set_flow_to_check_one_bond(net: &mut Network, iedge: usize, flow: i32) -> Opt
                 if delta == 0 {
                     break;
                 }
-                if edge == iedge {
+                if edge == iedge || net.edges[edge].forbidden {
                     continue;
                 }
                 let mut f = net.edges[edge].flow;
@@ -702,6 +705,7 @@ fn add_new_vertex(net: &mut Network, host: usize, ndots: &mut i32) {
         cap: 1,
         flow: 0,
         path: false,
+        forbidden: false,
     });
     net.verts[host].adj.push(index);
     net.verts[new].adj.push(index);
@@ -807,7 +811,7 @@ mod tests {
         group_of: &[Option<usize>],
         donor: &[bool],
     ) -> Network {
-        let mut bond_adjacency: Vec<Vec<(usize, i32)>> = vec![Vec::new(); atoms];
+        let mut bond_adjacency: Vec<Vec<(usize, i32, bool)>> = vec![Vec::new(); atoms];
         let mut single_like: Vec<Vec<bool>> = vec![Vec::new(); atoms];
         let flow = |kind: u32| match kind {
             2 => 1,
@@ -815,8 +819,8 @@ mod tests {
             _ => 0,
         };
         for &(a, b, kind) in bonds {
-            bond_adjacency[a].push((b, flow(kind)));
-            bond_adjacency[b].push((a, flow(kind)));
+            bond_adjacency[a].push((b, flow(kind), false));
+            bond_adjacency[b].push((a, flow(kind), false));
             single_like[a].push(true);
             single_like[b].push(true);
         }
