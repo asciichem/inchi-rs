@@ -95,9 +95,7 @@ impl Matching {
                 if base[v] == base[to] || self.matched[v] == to {
                     continue;
                 }
-                if to == root
-                    || (self.matched[to] != usize::MAX && used[self.matched[to]])
-                {
+                if to == root || (self.matched[to] != usize::MAX && used[self.matched[to]]) {
                     let curbase = Self::lca(&self.matched, &parent, &base, v, to);
                     for slot in blossom.iter_mut() {
                         *slot = usize::MAX;
