@@ -358,7 +358,7 @@ impl<'a> Context<'a> {
     }
 
     /// The reference's `nGetEndpointInfo`.
-    fn endpoint(&self, atom: usize) -> Option<Role> {
+    fn endpoint(&self, state: &Registration, atom: usize) -> Option<Role> {
         let record = &self.structure.atoms[atom];
         let valence = endpoint_valence(&record.element)? as i32;
         let heavy = self.neighbors[atom].len() as i32;
@@ -366,6 +366,18 @@ impl<'a> Context<'a> {
             return None;
         }
         if record.charge > 0 {
+            // The charge-point branch: a +1 atom inside a c-group
+            // whose subtype can hold or donate H is an endpoint.
+            if state.c_point_of[atom].is_some() {
+                if let Some((_, subtype)) = charge_type(self, state, atom) {
+                    if subtype & 4 != 0 {
+                        return Some(Role::Acceptor);
+                    }
+                    if subtype & 8 != 0 {
+                        return Some(Role::Donor);
+                    }
+                }
+            }
             return None;
         }
         let mobile = self.mobile(atom) as i32;
@@ -399,7 +411,7 @@ impl<'a> Context<'a> {
         if state.marks.contains(&index) {
             return BondType::Tautom;
         }
-        if self.aromatic.contains(&index) {
+        if state.altered.contains(&index) || self.aromatic.contains(&index) {
             return BondType::Altern;
         }
         match self.structure.bonds[index].2 {
@@ -441,6 +453,100 @@ impl<'a> Context<'a> {
     /// halve exactly for single/double/triple input).
     fn max_flow(&self, atom: usize) -> i32 {
         (self.bond_sum2[atom] / 2 - self.neighbors[atom].len() as i32).max(0)
+    }
+
+    /// The charge-mode alt path (ALT_PATH_MODE_CHARGE): the moved
+    /// atom-atom bonds come back as bond indices for the altered
+    /// marks.
+    fn charge_alt_path(
+        &self,
+        state: &Registration,
+        charged: usize,
+        neutral: usize,
+    ) -> (bool, Vec<usize>) {
+        let n = self.structure.atoms.len();
+        let bond_adjacency: Vec<Vec<(usize, i32, bool)>> = (0..n)
+            .map(|atom| {
+                self.neighbors[atom]
+                    .iter()
+                    .map(|&(neigh, kind)| {
+                        (
+                            neigh,
+                            match kind {
+                                2 => 1,
+                                3 => 2,
+                                _ => 0,
+                            },
+                            !self.allowed_edge(atom, neigh),
+                        )
+                    })
+                    .collect()
+            })
+            .collect();
+        let single_like: Vec<Vec<bool>> = (0..n)
+            .map(|atom| {
+                self.neighbors[atom]
+                    .iter()
+                    .map(|&(neigh, _)| {
+                        matches!(
+                            self.bond_type(state, atom, neigh),
+                            BondType::Single | BondType::Altern | BondType::Tautom
+                        )
+                    })
+                    .collect()
+            })
+            .collect();
+        let max_flow: Vec<i32> = (0..n).map(|atom| self.max_flow(atom)).collect();
+        let donor: Vec<bool> = (0..n)
+            .map(|atom| self.endpoint(state, atom) == Some(Role::Donor))
+            .collect();
+        let net = super::bns::Network::build(&super::bns::Build {
+            bond_adjacency: &bond_adjacency,
+            max_flow: &max_flow,
+            group_of: &state.group_of,
+            donor: &donor,
+            single_like: &single_like,
+            c_point_of: &state.c_point_of,
+            c_charged: &state.c_charged,
+        });
+        let (found, moved) = super::bns::charge_alt_path(&net, charged, neutral);
+        let bonds = moved
+            .iter()
+            .filter_map(|&(a, b)| self.bond_index.get(&(a, b)).copied())
+            .collect();
+        (found, bonds)
+    }
+
+    /// The reference's RegisterCPoints: pair two ungrouped points or
+    /// merge/extend their c-groups.
+    fn register_c_points(&self, state: &mut Registration, point1: usize, point2: usize) -> bool {
+        match (state.c_point_of[point1], state.c_point_of[point2]) {
+            (Some(a), Some(b)) if a == b => false,
+            (Some(a), Some(b)) => {
+                let (keep, gone) = if a < b { (a, b) } else { (b, a) };
+                for slot in state.c_point_of.iter_mut() {
+                    if *slot == Some(gone) {
+                        *slot = Some(keep);
+                    }
+                }
+                true
+            }
+            (Some(group), None) => {
+                state.c_point_of[point2] = Some(group);
+                true
+            }
+            (None, Some(group)) => {
+                state.c_point_of[point1] = Some(group);
+                true
+            }
+            (None, None) => {
+                let id = state.c_point_of.iter().flatten().max().map_or(0, |g| g + 1);
+                state.c_point_of[point1] = Some(id);
+                state.c_point_of[point2] = Some(id);
+                state.c_charged[point1] = true;
+                true
+            }
+        }
     }
 
     /// bExistsAnyAltPath over a fresh network for the current
@@ -489,7 +595,7 @@ impl<'a> Context<'a> {
             .collect();
         let max_flow: Vec<i32> = (0..n).map(|atom| self.max_flow(atom)).collect();
         let donor: Vec<bool> = (0..n)
-            .map(|atom| self.endpoint(atom) == Some(Role::Donor))
+            .map(|atom| self.endpoint(state, atom) == Some(Role::Donor))
             .collect();
         let net = super::bns::Network::build(&super::bns::Build {
             bond_adjacency: &bond_adjacency,
@@ -497,13 +603,19 @@ impl<'a> Context<'a> {
             group_of: &state.group_of,
             donor: &donor,
             single_like: &single_like,
+            c_point_of: &state.c_point_of,
+            c_charged: &state.c_charged,
         });
         let roles = super::bns::Roles {
             donor_ok: (0..n)
-                .map(|atom| state.registered(atom) || self.endpoint(atom) == Some(Role::Donor))
+                .map(|atom| {
+                    state.registered(atom) || self.endpoint(state, atom) == Some(Role::Donor)
+                })
                 .collect(),
             acceptor_ok: (0..n)
-                .map(|atom| state.registered(atom) || self.endpoint(atom) == Some(Role::Acceptor))
+                .map(|atom| {
+                    state.registered(atom) || self.endpoint(state, atom) == Some(Role::Acceptor)
+                })
                 .collect(),
         };
         super::bns::any_alt_path(&net, &roles, first, second)
@@ -516,8 +628,9 @@ impl<'a> Context<'a> {
 /// keep counting in the canonicalization.
 pub fn endpoint_mask(structure: &Structure, hydrogens: &[u32]) -> Vec<bool> {
     let context = Context::new(structure, hydrogens);
+    let state = fresh_state(structure.atoms.len());
     let mut mask = vec![false; structure.atoms.len()];
-    for members in components(&context, hydrogens) {
+    for members in components(&context, &state, hydrogens) {
         for atom in members {
             mask[atom] = true;
         }
@@ -530,7 +643,8 @@ pub fn endpoint_mask(structure: &Structure, hydrogens: &[u32]) -> Vec<bool> {
 /// reference's t-group CT section).
 pub fn group_membership(structure: &Structure, hydrogens: &[u32]) -> Vec<(u32, Vec<usize>)> {
     let context = Context::new(structure, hydrogens);
-    components(&context, hydrogens)
+    let state = fresh_state(structure.atoms.len());
+    components(&context, &state, hydrogens)
         .into_iter()
         .map(|members| {
             let count = members.iter().map(|&m| hydrogens[m]).sum();
@@ -560,6 +674,13 @@ pub fn without_mobile_h(hydrogens: &[u32], mask: &[bool]) -> Vec<u32> {
 struct Registration {
     group_of: Vec<Option<usize>>,
     marks: BTreeSet<usize>,
+    /// The charge-group membership (at[].c_point) and which member
+    /// carries the moveable charge.
+    c_point_of: Vec<Option<usize>>,
+    c_charged: Vec<bool>,
+    /// Bonds a successful charge move alternated (BOND_ALTERED): the
+    /// templates read them as alternating.
+    altered: BTreeSet<usize>,
 }
 
 impl Registration {
@@ -616,6 +737,17 @@ impl Registration {
     }
 }
 
+/// A blank registration state for the stateless public entry points.
+fn fresh_state(n: usize) -> Registration {
+    Registration {
+        group_of: vec![None; n],
+        marks: BTreeSet::new(),
+        c_point_of: vec![None; n],
+        c_charged: vec![false; n],
+        altered: BTreeSet::new(),
+    }
+}
+
 /// Builds the endpoint linkage: the templates run as registration
 /// rounds — anchors, then the shift walks — each registering groups
 /// and re-marking bonds, to a fixpoint. The returned adjacency joins
@@ -625,11 +757,17 @@ fn build_links(context: &Context) -> Vec<BTreeSet<usize>> {
     let mut state = Registration {
         group_of: vec![None; n],
         marks: BTreeSet::new(),
+        c_point_of: vec![None; n],
+        c_charged: vec![false; n],
+        altered: BTreeSet::new(),
     };
     for _ in 0..8 {
         let mut changed = registration_round(context, &mut state);
         if !changed {
             changed = walk_round(context, &mut state);
+        }
+        if !changed {
+            changed = charge_round(context, &mut state);
         }
         if !changed {
             break;
@@ -657,6 +795,189 @@ fn build_links(context: &Context) -> Vec<BTreeSet<usize>> {
     linked
 }
 
+/// The reference's GetChargeType + bCanBeACPoint: (type, subtype)
+/// for the charge-point candidates — N (0) and P (1) always, plus
+/// the ring-bound valence-2 O/S/Se/Te; the subtype bits say which
+/// side of a charge move the atom can play.
+fn charge_type(context: &Context, state: &Registration, atom: usize) -> Option<(i32, u8)> {
+    const CHARGED: u8 = 0;
+    const P_DONOR: u8 = 1;
+    const P_ACCEPT: u8 = 2;
+    const H_ACCEPT: u8 = 4;
+    const H_DONOR: u8 = 8;
+    const NEUTRAL: u8 = 16;
+
+    let record = &context.structure.atoms[atom];
+    // Ion pairs are ignored; a neighbor of the opposite charge that
+    // is not a tautomeric endpoint disqualifies.
+    if record.charge.abs() == 1 {
+        for &(neigh, _) in &context.neighbors[atom] {
+            let other = context.structure.atoms[neigh].charge;
+            if (other + record.charge).abs() < (other - record.charge).abs()
+                && state.group_of[neigh].is_none()
+            {
+                return None;
+            }
+        }
+    } else if record.charge != 0 {
+        return None;
+    }
+
+    let element = record.element.as_str();
+    let ring_bound = context.rings.size[atom] >= 5 && context.neighbors[atom].len() == 2;
+    let ctype: Option<(i32, i32, i32, i32)> = match element {
+        "N" => Some((0, 3, 3, 1)),
+        "P" => Some((1, 3, 3, 1)),
+        "O" if ring_bound => Some((2, 2, 2, 1)),
+        "S" if ring_bound => Some((3, 2, 2, 1)),
+        "Se" if ring_bound => Some((4, 2, 2, 1)),
+        "Te" if ring_bound => Some((5, 2, 2, 1)),
+        _ => None,
+    };
+    let (ctype_id, neutral_valence, neutral_cbv, change_valence) = ctype?;
+    let valence = context.neighbors[atom].len() as i32;
+    let cbv = context.bond_sum2[atom] / 2;
+    let num_h = context.mobile(atom) as i32;
+    let endpoint_valence = endpoint_valence(element).unwrap_or(0) as i32;
+    let neg = (record.charge == -1) as i32;
+
+    let subtype: u8;
+    if record.charge == 1 && valence == cbv && num_h > 0 {
+        // Proton-donor candidates (>NH(+)-, >OH(+)): never a point.
+        return None;
+    } else if record.charge == 1 && valence < cbv {
+        let bonds_valence = cbv + num_h;
+        let num_bonds = valence + num_h;
+        if bonds_valence != neutral_cbv + change_valence {
+            return None;
+        }
+        if num_bonds == neutral_valence {
+            subtype = if valence == neutral_valence || endpoint_valence == 0 {
+                CHARGED
+            } else {
+                CHARGED | H_DONOR
+            };
+        } else if num_bonds == neutral_valence - 1 {
+            subtype = if endpoint_valence > 0 {
+                if num_h > 0 {
+                    CHARGED | H_ACCEPT | P_DONOR
+                } else {
+                    CHARGED | H_ACCEPT
+                }
+            } else {
+                CHARGED
+            };
+        } else {
+            return None;
+        }
+    } else if record.charge == 0 || record.charge == -1 {
+        let bonds_valence = cbv + num_h + neg;
+        let num_bonds = valence + num_h + neg;
+        if bonds_valence != neutral_cbv {
+            return None;
+        }
+        if num_bonds == neutral_valence {
+            subtype = if valence == neutral_valence || endpoint_valence == 0 {
+                NEUTRAL
+            } else if valence < neutral_valence {
+                if num_h > 0 {
+                    NEUTRAL | H_DONOR
+                } else {
+                    NEUTRAL | H_ACCEPT
+                }
+            } else {
+                return None;
+            };
+        } else if num_bonds == neutral_valence - 1 {
+            subtype = if endpoint_valence > 0 {
+                NEUTRAL | H_ACCEPT | P_ACCEPT
+            } else {
+                NEUTRAL
+            };
+        } else {
+            return None;
+        }
+    } else {
+        return None;
+    }
+    Some((ctype_id, subtype))
+}
+
+/// One charge-group round, the reference's MarkChargeGroups: pair
+/// each charged candidate against the neutral candidates of the same
+/// type, confirm by the charge-mode balanced network, register the
+/// c-points, and record the bonds the move alternated.
+fn charge_round(context: &Context, state: &mut Registration) -> bool {
+    let n = context.structure.atoms.len();
+    let mut candidates: Vec<(usize, i32, u8)> = (0..n)
+        .filter_map(|atom| {
+            charge_type(context, state, atom).map(|(ctype, subtype)| (atom, ctype, subtype))
+        })
+        .collect();
+    if candidates.len() <= 1 {
+        return false;
+    }
+    candidates.sort_by_key(|&(atom, ctype, subtype)| (ctype, subtype, atom));
+    let neutral = |subtype: u8| subtype & 16 != 0;
+    let mut changed = false;
+    let mut i1 = 0;
+    while i1 < candidates.len() {
+        while i1 < candidates.len() && neutral(candidates[i1].2) {
+            i1 += 1;
+        }
+        if i1 == candidates.len() {
+            break;
+        }
+        let mut i2 = i1 + 1;
+        while i2 < candidates.len()
+            && candidates[i2].1 == candidates[i1].1
+            && !neutral(candidates[i2].2)
+        {
+            i2 += 1;
+        }
+        if i2 == candidates.len() {
+            break;
+        }
+        let mut i3 = i2;
+        while i3 < candidates.len() && candidates[i3].1 == candidates[i1].1 {
+            i3 += 1;
+        }
+        if i3 == i2 {
+            if i2 < candidates.len() {
+                i1 = i3;
+                continue;
+            }
+            break;
+        }
+        for charged in &candidates[i1..i2] {
+            for neutral_candidate in &candidates[i2..i3] {
+                let (iat1, _, _) = *charged;
+                let (iat2, _, _) = *neutral_candidate;
+                if state.c_point_of[iat1].is_some()
+                    && state.c_point_of[iat1] == state.c_point_of[iat2]
+                {
+                    continue;
+                }
+                let (found, moved) = context.charge_alt_path(state, iat1, iat2);
+                if !found {
+                    continue;
+                }
+                for bond in moved {
+                    if state.altered.insert(bond) {
+                        changed = true;
+                    }
+                }
+                if context.register_c_points(state, iat1, iat2) {
+                    changed = true;
+                }
+                return changed;
+            }
+        }
+        i1 = i3;
+    }
+    changed
+}
+
 /// One registration round: the reference's MarkTautomerGroups 1,3
 /// phase. Each endpoint reaches a centerpoint through a π-class bond;
 /// the centerpoint's other endpoint neighbors are classified by bond
@@ -671,7 +992,7 @@ fn registration_round(context: &Context, state: &mut Registration) -> bool {
     let n = context.structure.atoms.len();
     let mut changed = false;
     for start in 0..n {
-        if context.endpoint(start).is_none() {
+        if context.endpoint(state, start).is_none() {
             continue;
         }
         for &(centerpoint, _) in &context.neighbors[start] {
@@ -703,7 +1024,7 @@ fn registration_round(context: &Context, state: &mut Registration) -> bool {
                     BondType::Triple => continue,
                     _ => false,
                 };
-                let Some(arithmetic) = context.endpoint(endpoint) else {
+                let Some(arithmetic) = context.endpoint(state, endpoint) else {
                     continue;
                 };
                 let registered = state.registered(endpoint);
@@ -940,7 +1261,7 @@ fn walk_round(context: &Context, state: &mut Registration) -> bool {
     for start in 0..n {
         if context.rings.size[start] < 6
             || context.neighbors[start].len() != 2
-            || !context.is_ring_nitrogen(start)
+            || !context.is_ring_nitrogen(state, start)
         {
             continue;
         }
@@ -966,7 +1287,7 @@ fn walk_round(context: &Context, state: &mut Registration) -> bool {
     for i1 in 0..n {
         if context.rings.size[i1] < 5
             || context.neighbors[i1].len() != 2
-            || !context.is_ring_nitrogen(i1)
+            || !context.is_ring_nitrogen(state, i1)
         {
             continue;
         }
@@ -983,7 +1304,7 @@ fn walk_round(context: &Context, state: &mut Registration) -> bool {
             ) {
                 continue;
             }
-            if context.neighbors[i2].len() != 2 || !context.is_ring_nitrogen(i2) {
+            if context.neighbors[i2].len() != 2 || !context.is_ring_nitrogen(state, i2) {
                 continue;
             }
             if !state.registered(i1)
@@ -1043,7 +1364,7 @@ fn walk_round(context: &Context, state: &mut Registration) -> bool {
                 if endpoint1 == i2 {
                     continue;
                 }
-                let Some(eif1) = context.endpoint(endpoint1) else {
+                let Some(eif1) = context.endpoint(state, endpoint1) else {
                     continue;
                 };
                 if context.rings.system[endpoint1] == context.rings.system[i1] {
@@ -1060,7 +1381,7 @@ fn walk_round(context: &Context, state: &mut Registration) -> bool {
                     if endpoint2 == i1 {
                         continue;
                     }
-                    let Some(eif2) = context.endpoint(endpoint2) else {
+                    let Some(eif2) = context.endpoint(state, endpoint2) else {
                         continue;
                     };
                     if context.rings.system[endpoint2] == context.rings.system[i2] {
@@ -1141,8 +1462,8 @@ enum BondType {
 impl<'a> Context<'a> {
     /// The reference's `3 == nGetEndpointInfo(...)`: a classified
     /// nitrogen endpoint.
-    fn is_ring_nitrogen(&self, atom: usize) -> bool {
-        self.structure.atoms[atom].element == "N" && self.endpoint(atom).is_some()
+    fn is_ring_nitrogen(&self, state: &Registration, atom: usize) -> bool {
+        self.structure.atoms[atom].element == "N" && self.endpoint(state, atom).is_some()
     }
 }
 
@@ -1293,7 +1614,7 @@ fn check_pyrazole(
 ) -> bool {
     let n1 = path[0];
     let n2 = path[1];
-    if context.endpoint(n1).is_none() || context.endpoint(n2).is_none() {
+    if context.endpoint(state, n1).is_none() || context.endpoint(state, n2).is_none() {
         return false;
     }
     if !state.registered(n1)
@@ -1314,15 +1635,15 @@ fn check_pyrazole(
     };
     match last {
         BondType::Single => {
-            if (!state.registered(n1) && context.endpoint(n1) != Some(Role::Donor))
-                || (!state.registered(n2) && context.endpoint(n2) != Some(Role::Acceptor))
+            if (!state.registered(n1) && context.endpoint(state, n1) != Some(Role::Donor))
+                || (!state.registered(n2) && context.endpoint(state, n2) != Some(Role::Acceptor))
             {
                 return false;
             }
         }
         BondType::Double
-            if ((!state.registered(n1) && context.endpoint(n1) != Some(Role::Acceptor))
-                || (!state.registered(n2) && context.endpoint(n2) != Some(Role::Donor))) =>
+            if ((!state.registered(n1) && context.endpoint(state, n1) != Some(Role::Acceptor))
+                || (!state.registered(n2) && context.endpoint(state, n2) != Some(Role::Donor))) =>
         {
             return false;
         }
@@ -1364,13 +1685,13 @@ fn check_6memb_ring(
     ) {
         return false;
     }
-    let Some(eif_o) = context.endpoint(o_at) else {
+    let Some(eif_o) = context.endpoint(state, o_at) else {
         return false;
     };
     if exo == BondType::Single && !state.registered(o_at) && eif_o != Role::Donor {
         return false;
     }
-    let Some(eif_n) = context.endpoint(n_at) else {
+    let Some(eif_n) = context.endpoint(state, n_at) else {
         return false;
     };
     let mut shiftable = false;
@@ -1421,10 +1742,10 @@ fn check_tropolone(
 ) -> bool {
     let i1 = path[0];
     let i2 = path[1];
-    let Some(eif1) = context.endpoint(endpoint1) else {
+    let Some(eif1) = context.endpoint(state, endpoint1) else {
         return false;
     };
-    let Some(eif2) = context.endpoint(endpoint2) else {
+    let Some(eif2) = context.endpoint(state, endpoint2) else {
         return false;
     };
     // Chain: endpoint2's bond, the Q-R bond, the ring bonds (no
@@ -1507,13 +1828,13 @@ struct TropoloneFind {
 /// Groups of endpoints connected by 1,3 anchors or shift walks,
 /// filtered to those with at least two members and at least one
 /// mobile H. Rank-free — membership depends only on the structure.
-fn components(context: &Context, hydrogens: &[u32]) -> Vec<Vec<usize>> {
+fn components(context: &Context, state: &Registration, hydrogens: &[u32]) -> Vec<Vec<usize>> {
     let n = context.structure.atoms.len();
     let linked = build_links(context);
     let mut component = vec![usize::MAX; n];
     let mut groups = Vec::new();
     for start in 0..n {
-        if context.endpoint(start).is_none() || component[start] != usize::MAX {
+        if context.endpoint(state, start).is_none() || component[start] != usize::MAX {
             continue;
         }
         let mut members = Vec::new();
@@ -1538,8 +1859,9 @@ fn components(context: &Context, hydrogens: &[u32]) -> Vec<Vec<usize>> {
 
 pub fn mobile_groups(structure: &Structure, hydrogens: &[u32], ranks: &[u32]) -> Vec<MobileGroup> {
     let context = Context::new(structure, hydrogens);
+    let state = fresh_state(structure.atoms.len());
     let mut groups = Vec::new();
-    for members in components(&context, hydrogens) {
+    for members in components(&context, &state, hydrogens) {
         let count: u32 = members.iter().map(|&atom| hydrogens[atom]).sum();
         let mut group_ranks: Vec<u32> = members.iter().map(|&atom| ranks[atom]).collect();
         group_ranks.sort_unstable();
