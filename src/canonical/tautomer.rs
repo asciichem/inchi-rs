@@ -28,7 +28,12 @@ use std::collections::{BTreeSet, HashMap};
 /// its endpoints (ascending).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MobileGroup {
+    /// Mobile units: hydrogens plus negative charges (the reference's
+    /// t-group num[0]).
     pub count: u32,
+    /// Negative charges among the members (num[1]); the writer emits
+    /// them as the group's minus suffix.
+    pub charge: u32,
     pub ranks: Vec<u32>,
 }
 
@@ -626,11 +631,21 @@ impl<'a> Context<'a> {
 /// Endpoint arithmetic alone is not enough — an alcohol oxygen is a
 /// donor candidate that never joins a group, and its hydrogen must
 /// keep counting in the canonicalization.
+/// The mobile charge units per atom: a deprotonated endpoint counts
+/// as a mobile unit only on a fully pinned structure — the
+/// (DE)PROTONATION-standardized state. Raw structures read the legacy
+/// riding-hydrogen model.
+fn charge_units_of(structure: &Structure) -> impl Fn(usize) -> u32 + '_ {
+    let pinned = structure.atoms.iter().all(|atom| atom.h_pinned);
+    move |atom: usize| (pinned && structure.atoms[atom].charge == -1) as u32
+}
+
 pub fn endpoint_mask(structure: &Structure, hydrogens: &[u32]) -> Vec<bool> {
     let context = Context::new(structure, hydrogens);
     let state = fresh_state(structure.atoms.len());
+    let charge_units = charge_units_of(structure);
     let mut mask = vec![false; structure.atoms.len()];
-    for members in components(&context, &state, hydrogens) {
+    for members in components(&context, &state, hydrogens, &charge_units) {
         for atom in members {
             mask[atom] = true;
         }
@@ -644,7 +659,8 @@ pub fn endpoint_mask(structure: &Structure, hydrogens: &[u32]) -> Vec<bool> {
 pub fn group_membership(structure: &Structure, hydrogens: &[u32]) -> Vec<(u32, Vec<usize>)> {
     let context = Context::new(structure, hydrogens);
     let state = fresh_state(structure.atoms.len());
-    components(&context, &state, hydrogens)
+    let charge_units = charge_units_of(structure);
+    components(&context, &state, hydrogens, &charge_units)
         .into_iter()
         .map(|members| {
             let count = members.iter().map(|&m| hydrogens[m]).sum();
@@ -2120,7 +2136,12 @@ struct TropoloneFind {
 /// Groups of endpoints connected by 1,3 anchors or shift walks,
 /// filtered to those with at least two members and at least one
 /// mobile H. Rank-free — membership depends only on the structure.
-fn components(context: &Context, state: &Registration, hydrogens: &[u32]) -> Vec<Vec<usize>> {
+fn components(
+    context: &Context,
+    state: &Registration,
+    hydrogens: &[u32],
+    charge_units: &impl Fn(usize) -> u32,
+) -> Vec<Vec<usize>> {
     let n = context.structure.atoms.len();
     let linked = build_links(context);
     let mut component = vec![usize::MAX; n];
@@ -2141,7 +2162,10 @@ fn components(context: &Context, state: &Registration, hydrogens: &[u32]) -> Vec
                 }
             }
         }
-        let count: u32 = members.iter().map(|&atom| hydrogens[atom]).sum();
+        let count: u32 = members
+            .iter()
+            .map(|&atom| hydrogens[atom] + charge_units(atom))
+            .sum();
         if members.len() >= 2 && count > 0 {
             groups.push(members);
         }
@@ -2152,13 +2176,19 @@ fn components(context: &Context, state: &Registration, hydrogens: &[u32]) -> Vec
 pub fn mobile_groups(structure: &Structure, hydrogens: &[u32], ranks: &[u32]) -> Vec<MobileGroup> {
     let context = Context::new(structure, hydrogens);
     let state = fresh_state(structure.atoms.len());
+    let charge_units = charge_units_of(structure);
     let mut groups = Vec::new();
-    for members in components(&context, &state, hydrogens) {
-        let count: u32 = members.iter().map(|&atom| hydrogens[atom]).sum();
+    for members in components(&context, &state, hydrogens, &charge_units) {
+        let count: u32 = members
+            .iter()
+            .map(|&atom| hydrogens[atom] + charge_units(atom))
+            .sum();
+        let charge: u32 = members.iter().map(|&atom| charge_units(atom)).sum();
         let mut group_ranks: Vec<u32> = members.iter().map(|&atom| ranks[atom]).collect();
         group_ranks.sort_unstable();
         groups.push(MobileGroup {
             count,
+            charge,
             ranks: group_ranks,
         });
     }

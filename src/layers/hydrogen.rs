@@ -62,7 +62,15 @@ impl LayerEmitter for HydrogenLayer {
                 } else {
                     String::new()
                 };
-                format!("(H{},{})", count, members.join(","))
+                // A charged group writes its negative charge after the
+                // H count: (H4-,...), (H2-2,...) — the reference's
+                // mobile-group notation.
+                let charge = match group.charge {
+                    0 => String::new(),
+                    1 => "-".to_string(),
+                    charges => format!("-{charges}"),
+                };
+                format!("(H{}{},{})", count, charge, members.join(","))
             })
             .collect::<Vec<_>>()
             .join("");
