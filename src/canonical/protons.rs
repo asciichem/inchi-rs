@@ -456,16 +456,16 @@ fn el_valences(el: i32, charge: i32) -> [u8; 5] {
 /// The per-atom view the classifier reads, owning the standardized
 /// H/charge state. The doubled bond-order sum (aromatic = 3) keeps
 /// the arithmetic integral.
-struct ProtonContext {
-    element: Vec<i32>,
+pub(crate) struct ProtonContext {
+    pub(crate) element: Vec<i32>,
     neighbors: Vec<Vec<usize>>,
     cbv2: Vec<i32>,
-    h: Vec<u32>,
-    charge: Vec<i32>,
+    pub(crate) h: Vec<u32>,
+    pub(crate) charge: Vec<i32>,
 }
 
 impl ProtonContext {
-    fn new(structure: &Structure) -> Self {
+    pub(crate) fn new(structure: &Structure) -> Self {
         let n = structure.atoms.len();
         let mut neighbors = vec![Vec::new(); n];
         let mut cbv2 = vec![0i32; n];
@@ -518,7 +518,7 @@ impl ProtonContext {
 
 /// GetAtomChargeType: (type, mask) for the atom under the current
 /// standardized H/charge state.
-fn atom_charge_type(context: &ProtonContext, atom: usize) -> (u16, u32) {
+pub(crate) fn atom_charge_type(context: &ProtonContext, atom: usize) -> (u16, u32) {
     let (el, charge, h) = (context.element[atom], context.charge[atom], context.h[atom]);
     let valence = context.valence(atom);
     let mut typ = att::NONE;
@@ -762,6 +762,26 @@ fn totals(context: &ProtonContext) -> [i64; attot::ARRAY_LEN] {
         }
     }
     totals
+}
+
+/// bHasAcidicHydrogen: a neutral atom carrying H that matches the
+/// acidic-removal masks (the merge-phase donor class).
+pub(crate) fn has_acidic_hydrogen(context: &ProtonContext, atom: usize) -> bool {
+    if context.charge[atom] != 0 || context.h[atom] == 0 {
+        return false;
+    }
+    let (typ, mask) = atom_charge_type(context, atom);
+    typ & AR_SIMPLE_TYP1 != 0 && mask & AR_SIMPLE_MSK1 != 0
+}
+
+/// bHasAcidicMinus: an anion matching the acidic-addition masks (the
+/// merge-phase acceptor class).
+pub(crate) fn has_acidic_minus(context: &ProtonContext, atom: usize) -> bool {
+    if context.charge[atom] != -1 {
+        return false;
+    }
+    let (typ, mask) = atom_charge_type(context, atom);
+    typ & AA_SIMPLE_TYP1 != 0 && mask & AA_SIMPLE_MSK1 != 0
 }
 
 /// The standardization result: adjusted H counts and charges per atom

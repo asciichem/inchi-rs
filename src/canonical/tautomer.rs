@@ -567,6 +567,67 @@ impl<'a> Context<'a> {
         }
     }
 
+    /// The 2-H salt pair test over a fresh network: donors push,
+    /// acceptors pull, grouped atoms act through their t-group vertex.
+    fn salt2_alt_path(
+        &self,
+        state: &Registration,
+        first: usize,
+        second: usize,
+        donors: bool,
+    ) -> bool {
+        let mut net = self.build_network(state);
+        super::bns::exists_2h(&mut net, first, second, donors)
+    }
+
+    fn build_network(&self, state: &Registration) -> super::bns::Network {
+        let n = self.structure.atoms.len();
+        let bond_adjacency: Vec<Vec<(usize, i32, bool)>> = (0..n)
+            .map(|atom| {
+                self.neighbors[atom]
+                    .iter()
+                    .map(|&(neigh, kind)| {
+                        (
+                            neigh,
+                            match kind {
+                                2 => 1,
+                                3 => 2,
+                                _ => 0,
+                            },
+                            !self.allowed_edge(atom, neigh),
+                        )
+                    })
+                    .collect()
+            })
+            .collect();
+        let single_like: Vec<Vec<bool>> = (0..n)
+            .map(|atom| {
+                self.neighbors[atom]
+                    .iter()
+                    .map(|&(neigh, _)| {
+                        matches!(
+                            self.bond_type(state, atom, neigh),
+                            BondType::Single | BondType::Altern | BondType::Tautom
+                        )
+                    })
+                    .collect()
+            })
+            .collect();
+        let max_flow: Vec<i32> = (0..n).map(|atom| self.max_flow(atom)).collect();
+        let donor: Vec<bool> = (0..n)
+            .map(|atom| self.endpoint(state, atom) == Some(Role::Donor))
+            .collect();
+        super::bns::Network::build(&super::bns::Build {
+            bond_adjacency: &bond_adjacency,
+            max_flow: &max_flow,
+            group_of: &state.group_of,
+            donor: &donor,
+            single_like: &single_like,
+            c_point_of: &state.c_point_of,
+            c_charged: &state.c_charged,
+        })
+    }
+
     /// bExistsAnyAltPath over a fresh network for the current
     /// registration state: every template pairing is confirmed by the
     /// cap-aware balanced search before it registers.
@@ -710,6 +771,9 @@ struct Registration {
     /// Bonds a successful charge move alternated (BOND_ALTERED): the
     /// templates read them as alternating.
     altered: BTreeSet<usize>,
+    /// A salt registration succeeded (TG_FLAG_FOUND_SALT_CHARGES_DONE):
+    /// later salt gates relax to donor-only.
+    salt_charges_found: bool,
 }
 
 impl Registration {
@@ -774,6 +838,7 @@ fn fresh_state(n: usize) -> Registration {
         c_point_of: vec![None; n],
         c_charged: vec![false; n],
         altered: BTreeSet::new(),
+        salt_charges_found: false,
     }
 }
 
@@ -789,21 +854,45 @@ fn build_links(context: &Context) -> Vec<BTreeSet<usize>> {
         c_point_of: vec![None; n],
         c_charged: vec![false; n],
         altered: BTreeSet::new(),
+        salt_charges_found: false,
     };
     let mut alternated = alternation_round(context, &mut state);
-    for _ in 0..8 {
+    for pass in 0..8 {
         let mut changed = registration_round(context, &mut state);
+        let (r, mut w, mut c, mut s0, mut s1, mut a) = (changed, false, false, false, false, false);
         if !changed {
             changed = walk_round(context, &mut state);
+            w = changed;
         }
         if !changed {
             changed = charge_round(context, &mut state);
+            c = changed;
         }
         if !changed {
             changed = salt_round(context, &mut state);
+            s0 = changed;
+        }
+        if !changed {
+            changed = salt2_round(context, &mut state);
+            s1 = changed;
+        }
+        let mut m = false;
+        if !changed {
+            changed = merge_salt_round(context, &mut state);
+            m = changed;
         }
         if !changed {
             changed = alternation_round(context, &mut state);
+            a = changed;
+        }
+        if std::env::var_os("INCHI_TRACE_BNS").is_some() {
+            let groups: Vec<usize> = state.group_of.iter().flatten().copied().collect();
+            eprintln!(
+                "FIXPOINT pass={pass} reg={r} walk={w} charge={c} salt0={s0} salt2={s1} merge={m} alt={a} groups={} marks={} altered={}",
+                groups.len(),
+                state.marks.len(),
+                state.altered.len()
+            );
         }
         if !changed && !alternated {
             break;
@@ -1309,6 +1398,213 @@ fn salt_round(context: &Context, state: &mut Registration) -> bool {
 /// equivalence classes, and only classes that bridge or extend groups
 /// register (the `!nGroupNumber || bDiffGroups > 0` gate). The
 /// surviving centerpoint bonds are marked tautomeric regardless.
+/// MergeSaltTautGroups: after the salt steps, the acidic-site
+/// candidates' groups merge BLIND — one representative per group, all
+/// registered into a single t-group — provided the candidate set
+/// holds both a negative-charge donor class and an H donor class (or
+/// any groups at all once a salt registration has succeeded). The
+/// non-taut acceptor-only sites and non-taut nitrogens never join.
+fn merge_salt_round(context: &Context, state: &mut Registration) -> bool {
+    let n = context.structure.atoms.len();
+    let proton_context = crate::canonical::protons::ProtonContext::new(context.structure);
+    const SALT_P_DONOR: u8 = 8;
+    const SALT_P_ACCEPTOR: u8 = 16;
+    const DONOR_ALL: u8 = SALT_DONOR_NEG | SALT_DONOR_H | SALT_P_ACCEPTOR | SALT_P_DONOR;
+    const DONOR_NEG2: u8 = SALT_DONOR_NEG | SALT_P_ACCEPTOR;
+    const DONOR_H2: u8 = SALT_DONOR_H | SALT_P_DONOR;
+
+    let mut subtype_all = 0u8;
+    let mut candidates: Vec<usize> = Vec::new();
+    for atom in 0..n {
+        let subtype = if let Some(sub) = salt_charge_type(context, state, atom) {
+            sub
+        } else if let Some(sub) = other_salt_charge_type(context, state, atom) {
+            sub
+        } else if crate::canonical::protons::has_acidic_hydrogen(&proton_context, atom) {
+            SALT_P_DONOR
+        } else if crate::canonical::protons::has_acidic_minus(&proton_context, atom) {
+            SALT_P_ACCEPTOR
+        } else {
+            continue;
+        };
+        if state.registered(atom) {
+            // tautomeric atoms always join
+        } else if context.structure.atoms[atom].element == "N" {
+            continue; // bDoNotMergeNonTautAtom
+        }
+        if subtype & DONOR_ALL == 0 {
+            continue;
+        }
+        if subtype & SALT_ACCEPTOR != 0 && !state.registered(atom) {
+            continue;
+        }
+        subtype_all |= subtype;
+        candidates.push(atom);
+    }
+
+    if candidates.len() <= 1 {
+        return false;
+    }
+    if state.salt_charges_found {
+        if (subtype_all & DONOR_NEG2 == 0 || subtype_all & DONOR_H2 == 0)
+            && state.group_of.iter().flatten().next().is_none()
+        {
+            return false;
+        }
+    } else if subtype_all & DONOR_NEG2 == 0 || subtype_all & DONOR_H2 == 0 {
+        return false;
+    }
+
+    // One representative per group (the C's endpoint-change scan);
+    // the acceptor-only non-taut sites already filtered above.
+    let mut representatives: Vec<usize> = Vec::new();
+    let mut seen: Vec<usize> = Vec::new();
+    let mut distinct = 0usize;
+    let mut previous: Option<usize> = None;
+    for &atom in &candidates {
+        let group = state.group_of[atom];
+        if group != previous || group.is_none() {
+            distinct += 1;
+        }
+        previous = group;
+        match group {
+            Some(group) => {
+                if !seen.contains(&group) {
+                    seen.push(group);
+                    representatives.push(atom);
+                }
+            }
+            None => representatives.push(atom),
+        }
+    }
+    if distinct <= 1 {
+        return false;
+    }
+    state.register(&representatives)
+}
+
+/// MarkSaltChargeGroups2 (salt step 1): the multi-attachment merge.
+/// Candidates are acidic sites — genuine salt sites (type 0) and
+/// other-type exchangeable sites (type 1) — the first per group kept,
+/// tautomeric candidates ranked first. The TST pass confirms both a
+/// donor pair and an acceptor pair exist; the CHG pass re-runs the
+/// pair tests and marks every endpoint SALT_SELECTED; all selected
+/// atoms' groups merge into one t-group.
+fn salt2_round(context: &Context, state: &mut Registration) -> bool {
+    let n = context.structure.atoms.len();
+    let mut candidates: Vec<(usize, u8, u8)> = Vec::new();
+    let mut subtype_all = 0u8;
+    let mut other_count = 0usize;
+    for atom in 0..n {
+        let (kind, subtype) = if let Some(sub) = salt_charge_type(context, state, atom) {
+            (0u8, sub)
+        } else if let Some(sub) = other_salt_charge_type(context, state, atom) {
+            other_count += 1;
+            (1u8, sub)
+        } else {
+            continue;
+        };
+        subtype_all |= subtype;
+        candidates.push((atom, kind, subtype));
+    }
+    // The gate: acceptor present, and a donor unless everything is
+    // other-type; FOUND_SALT_CHARGES_DONE relaxes to donor-only.
+    let donor_all = SALT_DONOR_NEG | SALT_DONOR_H;
+    if candidates.len() <= 1
+        || subtype_all & SALT_ACCEPTOR == 0
+        || (state.salt_charges_found && subtype_all & donor_all == 0)
+        || (!state.salt_charges_found
+            && (subtype_all & SALT_DONOR_NEG == 0 || other_count == candidates.len()))
+    {
+        return false;
+    }
+
+    // Keep the first candidate per group; tautomeric candidates first.
+    let mut seen: Vec<usize> = Vec::new();
+    candidates.retain(|&(atom, _, _)| match state.group_of[atom] {
+        Some(group) => {
+            if seen.contains(&group) {
+                false
+            } else {
+                seen.push(group);
+                true
+            }
+        }
+        None => true,
+    });
+    candidates.sort_by_key(|&(atom, _, _)| state.group_of[atom].is_none());
+
+    let is_donor = |subtype: u8| subtype & donor_all != 0;
+    let is_acceptor = |subtype: u8| subtype & SALT_ACCEPTOR != 0;
+
+    // The TST pass: both pair kinds must exist somewhere.
+    let mut donor_pair = false;
+    let mut acceptor_pair = false;
+    'tst: for i in 0..candidates.len() {
+        for j in 0..=i {
+            if i == j && state.group_of[candidates[i].0].is_none() {
+                continue;
+            }
+            let (_, _, si) = candidates[i];
+            let (_, _, sj) = candidates[j];
+            if !donor_pair
+                && is_donor(si)
+                && is_donor(sj)
+                && context.salt2_alt_path(state, candidates[i].0, candidates[j].0, true)
+            {
+                donor_pair = true;
+            }
+            if !acceptor_pair
+                && is_acceptor(si)
+                && is_acceptor(sj)
+                && context.salt2_alt_path(state, candidates[i].0, candidates[j].0, false)
+            {
+                acceptor_pair = true;
+            }
+            if donor_pair && acceptor_pair {
+                break 'tst;
+            }
+        }
+    }
+    if !(donor_pair && acceptor_pair) {
+        return false;
+    }
+
+    // The CHG pass: every confirmed pair marks both endpoints
+    // SALT_SELECTED.
+    let mut selected: Vec<usize> = Vec::new();
+    for i in 0..candidates.len() {
+        for j in 0..=i {
+            if i == j && state.group_of[candidates[i].0].is_none() {
+                continue;
+            }
+            let (_, _, si) = candidates[i];
+            let (_, _, sj) = candidates[j];
+            if is_donor(si)
+                && is_donor(sj)
+                && context.salt2_alt_path(state, candidates[i].0, candidates[j].0, true)
+                || is_acceptor(si)
+                    && is_acceptor(sj)
+                    && context.salt2_alt_path(state, candidates[i].0, candidates[j].0, false)
+            {
+                for &(atom, _, _) in [candidates[i], candidates[j]].iter() {
+                    if !selected.contains(&atom) {
+                        selected.push(atom);
+                    }
+                }
+            }
+        }
+    }
+    if selected.is_empty() {
+        return false;
+    }
+    let changed = state.register(&selected);
+    if changed {
+        state.salt_charges_found = true;
+    }
+    changed
+}
+
 fn registration_round(context: &Context, state: &mut Registration) -> bool {
     let n = context.structure.atoms.len();
     let mut changed = false;
@@ -1839,8 +2135,9 @@ fn mark_path_bonds(
     state: &mut Registration,
     path: &[usize],
     bonds: &[BondType],
-) {
+) -> bool {
     let ring = bonds.len() == path.len();
+    let mut marked = false;
     for (step, bond) in path.windows(2).zip(bonds) {
         if matches!(
             *bond,
@@ -1850,7 +2147,7 @@ fn mark_path_bonds(
                 .bond_index
                 .get(&(step[0].min(step[1]), step[0].max(step[1])))
             {
-                state.marks.insert(index);
+                marked |= state.marks.insert(index);
             }
         }
     }
@@ -1862,10 +2159,11 @@ fn mark_path_bonds(
             BondType::Single | BondType::Double | BondType::Altern
         ) {
             if let Some(&index) = context.bond_index.get(&(first.min(last), first.max(last))) {
-                state.marks.insert(index);
+                marked |= state.marks.insert(index);
             }
         }
     }
+    marked
 }
 
 /// The reference's DFS_FindTautInARing: paths around a cycle of
@@ -1970,9 +2268,9 @@ fn check_pyrazole(
         }
         _ => {}
     }
-    state.register(&[n1, n2]);
-    mark_path_bonds(context, state, path, bonds);
-    true
+    let registered = state.register(&[n1, n2]);
+    let marked = mark_path_bonds(context, state, path, bonds);
+    registered || marked
 }
 
 /// Check6MembTautRing (4-pyridinol): the para ring atom (three
@@ -2038,9 +2336,9 @@ fn check_6memb_ring(
     {
         return false;
     }
-    state.register(&[n_at, o_at]);
-    mark_path_bonds(context, state, path, bonds);
-    true
+    let registered = state.register(&[n_at, o_at]);
+    let marked = mark_path_bonds(context, state, path, bonds);
+    registered || marked
 }
 
 /// Check7MembTautRing (the 1,4 tropolone pattern, its 5-member

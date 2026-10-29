@@ -21,7 +21,7 @@ pub fn mobile_charges(structure: &Structure) -> i32 {
     crate::canonical::tautomer::mobile_groups(structure, &counts, &ranks)
         .iter()
         .filter(|group| group.count > group.charge)
-        .map(|group| group.charge as i32)
+        .map(|group| -(group.charge as i32))
         .sum()
 }
 
@@ -75,20 +75,26 @@ impl LayerEmitter for HydrogenLayer {
             .filter(|group| group.count > group.charge)
             .map(|group| {
                 let members: Vec<String> = group.ranks.iter().map(|r| r.to_string()).collect();
-                let count = if group.count > 1 {
-                    group.count.to_string()
+                // A charged group writes its mobile hydrogen (the
+                // mobile units minus the charges) then the negative
+                // charge: (H4-,...), (H2-2,...) — the reference's
+                // mobile-group notation.
+                let hydrogen = if group.charge > 0 {
+                    group.count - group.charge
+                } else {
+                    group.count
+                };
+                let hydrogen = if hydrogen > 1 {
+                    hydrogen.to_string()
                 } else {
                     String::new()
                 };
-                // A charged group writes its negative charge after the
-                // H count: (H4-,...), (H2-2,...) — the reference's
-                // mobile-group notation.
                 let charge = match group.charge {
                     0 => String::new(),
                     1 => "-".to_string(),
                     charges => format!("-{charges}"),
                 };
-                format!("(H{}{},{})", count, charge, members.join(","))
+                format!("(H{}{},{})", hydrogen, charge, members.join(","))
             })
             .collect::<Vec<_>>()
             .join("");

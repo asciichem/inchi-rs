@@ -787,31 +787,7 @@ fn set_flow_to_check_one_bond(net: &mut Network, iedge: usize, flow: i32) -> Opt
 
 /// bAddNewVertex: attach a temp vertex carrying one dot to `host`.
 fn add_new_vertex(net: &mut Network, host: usize, ndots: &mut i32) {
-    let new = net.verts.len();
-    net.verts.push(Vertex {
-        st_cap: 1,
-        st_flow: 0,
-        st_path: false,
-        adj: Vec::new(),
-        kind: Kind::Temp,
-    });
-    let index = net.edges.len() as u32;
-    net.edges.push(Edge {
-        a: host as u32,
-        b: new as u32,
-        cap: 1,
-        flow: 0,
-        path: false,
-        forbidden: false,
-    });
-    net.verts[host].adj.push(index);
-    net.verts[new].adj.push(index);
-    *ndots += 1;
-    *ndots -= net.verts[host].st_cap - net.verts[host].st_flow;
-    if net.verts[host].st_cap < net.verts[host].st_flow {
-        net.verts[host].st_cap = net.verts[host].st_flow;
-    }
-    *ndots += net.verts[host].st_cap - net.verts[host].st_flow;
+    add_new_vertex_cap(net, host, 1, ndots);
 }
 
 /// bAddStCapToAVertex: one more dot on `v1` and the raised bond
@@ -900,6 +876,147 @@ fn group_edge_of(net: &Network, atom: usize, kind: Kind) -> Option<usize> {
         .copied()
         .map(|edge| edge as usize)
         .find(|&edge| net.verts[net.other(edge, atom)].kind == kind)
+}
+
+/// The t-group vertex acting for `atom`, when the atom is an
+/// endpoint (GetGroupVertex).
+fn group_vertex_of(net: &Network, atom: usize, kind: Kind) -> Option<usize> {
+    group_edge_of(net, atom, kind).map(|edge| net.other(edge, atom))
+}
+
+/// bAddNewVertex with an explicit dot capacity: a fresh `cap`-sized
+/// sink edge on `host` and the host's st-cap rebalance.
+fn add_new_vertex_cap(net: &mut Network, host: usize, cap: i32, ndots: &mut i32) {
+    let new = net.verts.len();
+    net.verts.push(Vertex {
+        st_cap: cap,
+        st_flow: 0,
+        st_path: false,
+        adj: Vec::new(),
+        kind: Kind::Temp,
+    });
+    let index = net.edges.len() as u32;
+    net.edges.push(Edge {
+        a: host as u32,
+        b: new as u32,
+        cap,
+        flow: 0,
+        path: false,
+        forbidden: false,
+    });
+    net.verts[host].adj.push(index);
+    net.verts[new].adj.push(index);
+    *ndots += 1;
+    *ndots -= net.verts[host].st_cap - net.verts[host].st_flow;
+    if net.verts[host].st_cap < net.verts[host].st_flow {
+        net.verts[host].st_cap = net.verts[host].st_flow;
+    }
+    *ndots += net.verts[host].st_cap - net.verts[host].st_flow;
+}
+
+/// bExistsAltPath's 2-H setup (ALT_PATH_MODE_{ADD2H,REM2H}_{TST,CHG}):
+/// REM2H endpoints push (st-cap increments, or a dot vertex when they
+/// act through a t-group), ADD2H endpoints pull (dot vertices, or
+/// st-cap when grouped); same-group endpoints share one 2-unit dot.
+/// An alternate path exists when the augmentation covers the dots.
+pub(crate) fn exists_2h(net: &mut Network, first: usize, second: usize, donors: bool) -> bool {
+    // Adjacency precheck per endpoint: donors need a neighbor with st
+    // capacity (or the partner over a non-maxed bond); acceptors need
+    // a neighbor carrying flow.
+    let capable = |net: &Network, v: usize, partner: usize| -> bool {
+        let mut n = 0;
+        let mut adjacent = 0;
+        for &edge in &net.verts[v].adj {
+            let edge = edge as usize;
+            let other = net.other(edge, v);
+            if donors {
+                n += (net.verts[other].st_cap > 0) as i32;
+                adjacent += (other == partner && net.edges[edge].cap < MAX_BOND_EDGE_CAP) as i32;
+            } else {
+                n += (net.edges[edge].flow > 0) as i32;
+            }
+        }
+        n > 0 || adjacent > 0
+    };
+    if !capable(net, first, second) || !capable(net, second, first) {
+        return false;
+    }
+
+    let mut ndots = 0;
+    if std::env::var_os("INCHI_TRACE_NET").is_some() {
+        for (atom, vert) in net.verts.iter().enumerate() {
+            if vert.kind != Kind::Atom {
+                continue;
+            }
+            let edges: Vec<String> = vert
+                .adj
+                .iter()
+                .map(|&e| {
+                    format!(
+                        "{}:{}/{}",
+                        net.other(e as usize, atom),
+                        net.edges[e as usize].cap,
+                        net.edges[e as usize].flow
+                    )
+                })
+                .collect();
+            eprintln!(
+                "NET atom={atom} st={}/{} adj={}",
+                vert.st_cap,
+                vert.st_flow,
+                edges.join(",")
+            );
+        }
+    }
+    let v1t = group_vertex_of(net, first, Kind::TGroup);
+    let v2t = group_vertex_of(net, second, Kind::TGroup);
+    let v1act = v1t.unwrap_or(first);
+    let v2act = v2t.unwrap_or(second);
+    let cap = if v1t.is_some() && v1t == v2t { 2 } else { 1 };
+
+    // (bDonors != 0) == (vt != NO_VERTEX) picks the dot side.
+    let side = |grouped: bool| donors == grouped;
+    let mut set_v1 = false;
+    let mut set_v2 = false;
+    if side(v1t.is_some()) {
+        add_new_vertex_cap(net, v1act, cap, &mut ndots);
+        set_v1 = true;
+    }
+    if side(v2t.is_some()) {
+        if cap == 1 {
+            add_new_vertex_cap(net, v2act, 1, &mut ndots);
+        }
+        set_v2 = true;
+    }
+    if !set_v1 {
+        add_st_cap(net, v1act, v2act, &mut ndots);
+    }
+    if !set_v2 {
+        add_st_cap(net, v2act, v1act, &mut ndots);
+    }
+    if ndots < 0 || ndots % 2 != 0 {
+        return false;
+    }
+
+    let mut sum = 0;
+    for _ in 0..MAX_PASSES {
+        let delta = balanced_network_search(net);
+        if delta <= 0 {
+            let ok = delta == 0 && 2 * sum >= ndots;
+            if std::env::var_os("INCHI_TRACE_BNS").is_some() {
+                eprintln!("SALT2H {first}-{second} donors={donors} dots={ndots} sum={sum} delta={delta} -> {ok}");
+            }
+            return ok;
+        }
+        sum += delta;
+    }
+    let ok = 2 * sum >= ndots;
+    if std::env::var_os("INCHI_TRACE_BNS").is_some() {
+        eprintln!(
+            "SALT2H {first}-{second} donors={donors} dots={ndots} sum={sum} passes-out -> {ok}"
+        );
+    }
+    ok
 }
 
 /// bExistsAltPath under ALT_PATH_MODE_TAUTOM: the role precheck, the
@@ -1064,6 +1181,30 @@ mod tests {
             acceptor_ok: vec![false, true, false],
         };
         assert!(any_alt_path(&net, &roles, 1, 2));
+    }
+
+    #[test]
+    fn two_registered_groups_admit_a_two_unit_donor_path() {
+        // Two carboxyl groups joined through a carbon chain, both
+        // registered: the 2-H donor test between their hydroxyl
+        // oxygens must find the paired augmentation (the salt-step-1
+        // shape on b53: every grouped pair routes through the group
+        // vertices).
+        let net = net(
+            7,
+            &[
+                (0, 1, 2),
+                (0, 2, 1),
+                (2, 3, 1),
+                (3, 4, 2),
+                (3, 5, 1),
+                (5, 6, 1),
+            ],
+            &[1, 1, 1, 1, 1, 1, 1],
+            &[Some(0), None, Some(0), None, Some(1), Some(1), None],
+            &[false, false, true, false, false, true, false],
+        );
+        assert!(exists_2h(&mut { net }, 2, 5, true));
     }
 
     #[test]
