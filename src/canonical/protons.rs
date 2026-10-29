@@ -1,0 +1,1033 @@
+//! The (DE)PROTONATION normalization (the reference's
+//! RemoveNPProtonsAndAcidCharges, TECHMAN 5.1/5.2): charged
+//! structures have acidic protons removed from neutral heteroatoms
+//! (net charge > 0) or protons added to anionic heteroatoms (net
+//! charge < 0) so the standardized skeleton reads as the conjugate
+//! form; the shifted protons surface later as the /p layer.
+//!
+//! Scope of this slice: the SIMPLE variants (5.1a SimpleRemoveHplusNPO,
+//! 5.2a SimpleRemoveAcidicProtons, SimpleAddAcidicProtons) with the
+//! reference's priority masks (AR_SIMPLE/AA_SIMPLE step 1; steps 2-3
+//! are compiled out under AR_ANY_OH=0/AA_ANY_O_Minus=0). The HARD
+//! variants (BNS-checked removal, TECHMAN 5.1b/5.2b, on under
+//! bTgFlagHardAddRenProtons=1) are pending; they extend the same
+//! classification with alt-path tests.
+
+use crate::graph::Structure;
+
+/// AT_* type bits (inpdef.h ATT_*).
+mod att {
+    pub const NONE: u16 = 0x0000;
+    pub const ACIDIC_CO: u16 = 0x0001;
+    pub const ACIDIC_S: u16 = 0x0002;
+    pub const OO: u16 = 0x0004;
+    pub const ZOO: u16 = 0x0008;
+    pub const NO: u16 = 0x0010;
+    pub const N_O: u16 = 0x0020;
+    pub const ATOM_N: u16 = 0x0040;
+    pub const ATOM_P: u16 = 0x0080;
+    pub const OTHER_NEG_O: u16 = 0x0100;
+    pub const OTHER_ZO: u16 = 0x0200;
+    pub const OH_MINUS: u16 = 0x0400;
+    pub const O_PLUS: u16 = 0x0800;
+    pub const PROTON: u16 = 0x1000;
+    pub const HAL_ANION: u16 = 0x2000;
+    pub const HAL_ACID: u16 = 0x4000;
+}
+
+/// ATBIT_* mask bits: bit i = the atom counts in ATTOT total i.
+mod atbit {
+    use super::attot;
+    pub const NP_PLUS: u32 = 1 << attot::NP_PLUS;
+    pub const NP_PROTON: u32 = 1 << attot::NP_PROTON;
+    pub const NP_H: u32 = 1 << attot::NP_H;
+    pub const N_MINUS: u32 = 1 << attot::N_MINUS;
+    pub const NP: u32 = 1 << attot::NP;
+    pub const ON: u32 = 1 << attot::ON;
+    pub const COH: u32 = 1 << attot::COH;
+    pub const CSH: u32 = 1 << attot::CSH;
+    pub const ZOH: u32 = 1 << attot::ZOH;
+    pub const OOH: u32 = 1 << attot::OOH;
+    pub const ZOOH: u32 = 1 << attot::ZOOH;
+    pub const NOH: u32 = 1 << attot::NOH;
+    pub const N_OH: u32 = 1 << attot::N_OH;
+    pub const CO: u32 = 1 << attot::CO;
+    pub const ZO: u32 = 1 << attot::ZO;
+    pub const NO2: u32 = 1 << attot::NO2;
+    pub const N_O: u32 = 1 << attot::N_O;
+    pub const CO_MINUS: u32 = 1 << attot::CO_MINUS;
+    pub const CS_MINUS: u32 = 1 << attot::CS_MINUS;
+    pub const ZO_MINUS: u32 = 1 << attot::ZO_MINUS;
+    pub const OO_MINUS: u32 = 1 << attot::OO_MINUS;
+    pub const ZOO_MINUS: u32 = 1 << attot::ZOO_MINUS;
+    pub const NO_MINUS: u32 = 1 << attot::NO_MINUS;
+    pub const N_O_MINUS: u32 = 1 << attot::N_O_MINUS;
+    pub const O_MINUS: u32 = 1 << attot::O_MINUS;
+    pub const OH_PLUS: u32 = 1 << attot::OH_PLUS;
+    pub const O_PLUS: u32 = 1 << attot::O_PLUS;
+    pub const PROTON: u32 = 1 << attot::PROTON;
+    pub const HAL_ANION: u32 = 1 << attot::HAL_ANION;
+    pub const HAL_ACID: u32 = 1 << attot::HAL_ACID;
+    pub const ERRORS: u32 = 1 << attot::ERRORS;
+}
+
+/// ATTOT_* total slots (only the ones the driver reads).
+mod attot {
+    pub const NP_PLUS: usize = 0;
+    pub const NP_PROTON: usize = 1;
+    #[allow(dead_code)]
+    pub const NP_H: usize = 2;
+    pub const N_MINUS: usize = 3;
+    #[allow(dead_code)]
+    pub const NP: usize = 4;
+    #[allow(dead_code)]
+    pub const ON: usize = 5;
+    #[allow(dead_code)]
+    pub const COH: usize = 6;
+    #[allow(dead_code)]
+    pub const CSH: usize = 7;
+    #[allow(dead_code)]
+    pub const ZOH: usize = 8;
+    #[allow(dead_code)]
+    pub const OOH: usize = 9;
+    #[allow(dead_code)]
+    pub const ZOOH: usize = 10;
+    #[allow(dead_code)]
+    pub const NOH: usize = 11;
+    #[allow(dead_code)]
+    pub const N_OH: usize = 12;
+    #[allow(dead_code)]
+    pub const CO: usize = 13;
+    #[allow(dead_code)]
+    pub const ZO: usize = 14;
+    #[allow(dead_code)]
+    pub const NO2: usize = 15;
+    #[allow(dead_code)]
+    pub const N_O: usize = 16;
+    #[allow(dead_code)]
+    pub const CO_MINUS: usize = 17;
+    #[allow(dead_code)]
+    pub const CS_MINUS: usize = 18;
+    #[allow(dead_code)]
+    pub const ZO_MINUS: usize = 19;
+    #[allow(dead_code)]
+    pub const OO_MINUS: usize = 20;
+    #[allow(dead_code)]
+    pub const ZOO_MINUS: usize = 21;
+    #[allow(dead_code)]
+    pub const NO_MINUS: usize = 22;
+    #[allow(dead_code)]
+    pub const N_O_MINUS: usize = 23;
+    #[allow(dead_code)]
+    pub const O_MINUS: usize = 24;
+    #[allow(dead_code)]
+    pub const OH_PLUS: usize = 25;
+    #[allow(dead_code)]
+    pub const O_PLUS: usize = 26;
+    #[allow(dead_code)]
+    pub const PROTON: usize = 27;
+    #[allow(dead_code)]
+    pub const HAL_ANION: usize = 28;
+    #[allow(dead_code)]
+    pub const HAL_ACID: usize = 29;
+    pub const ERRORS: usize = 30;
+    pub const TOT_CHARGE: usize = 31;
+    pub const NUM_CHARGES: usize = 32;
+    pub const ARRAY_LEN: usize = 33;
+}
+
+/// PR_SIMPLE: protons off charged N,P and OH(+).
+const PR_SIMPLE_MSK: u32 = atbit::NP_PROTON | atbit::OH_PLUS;
+const PR_SIMPLE_TYP: u16 = att::ATOM_N | att::ATOM_P | att::O_PLUS;
+
+/// AR_SIMPLE step 1 (steps 2-3 compiled out: AR_ANY_OH=0).
+const AR_SIMPLE_MSK1: u32 =
+    atbit::COH | atbit::CSH | atbit::OOH | atbit::ZOOH | atbit::NOH | atbit::HAL_ACID;
+const AR_SIMPLE_TYP1: u16 =
+    att::ACIDIC_CO | att::ACIDIC_S | att::OO | att::ZOO | att::NO | att::HAL_ACID;
+
+/// AA_SIMPLE step 1 (steps 2-3 compiled out: AA_ANY_O_Minus=0).
+const AA_SIMPLE_MSK1: u32 = atbit::CO_MINUS
+    | atbit::CS_MINUS
+    | atbit::OO_MINUS
+    | atbit::ZOO_MINUS
+    | atbit::NO_MINUS
+    | atbit::O_MINUS
+    | atbit::HAL_ANION;
+const AA_SIMPLE_TYP1: u16 =
+    att::ACIDIC_CO | att::ACIDIC_S | att::OO | att::ZOO | att::NO | att::OH_MINUS | att::HAL_ANION;
+
+const AR_STEPS: [(u16, u32); 1] = [(AR_SIMPLE_TYP1, AR_SIMPLE_MSK1)];
+const AA_STEPS: [(u16, u32); 1] = [(AA_SIMPLE_TYP1, AA_SIMPLE_MSK1)];
+
+/// Element number for the atoms this phase classifies; None for
+/// anything outside the table (treated as a non-Z, non-metal other).
+pub(crate) fn el_number(element: &str) -> Option<i32> {
+    let n = match element {
+        "H" | "D" | "T" => 1,
+        "He" => 2,
+        "Li" => 3,
+        "Be" => 4,
+        "B" => 5,
+        "C" => 6,
+        "N" => 7,
+        "O" => 8,
+        "F" => 9,
+        "Ne" => 10,
+        "Na" => 11,
+        "Mg" => 12,
+        "Al" => 13,
+        "Si" => 14,
+        "P" => 15,
+        "S" => 16,
+        "Cl" => 17,
+        "Ar" => 18,
+        "K" => 19,
+        "Ca" => 20,
+        "Sc" => 21,
+        "Ti" => 22,
+        "V" => 23,
+        "Cr" => 24,
+        "Mn" => 25,
+        "Fe" => 26,
+        "Co" => 27,
+        "Ni" => 28,
+        "Cu" => 29,
+        "Zn" => 30,
+        "Ga" => 31,
+        "Ge" => 32,
+        "As" => 33,
+        "Se" => 34,
+        "Br" => 35,
+        "Kr" => 36,
+        "Rb" => 37,
+        "Sr" => 38,
+        "Y" => 39,
+        "Zr" => 40,
+        "Nb" => 41,
+        "Mo" => 42,
+        "Tc" => 43,
+        "Ru" => 44,
+        "Rh" => 45,
+        "Pd" => 46,
+        "Ag" => 47,
+        "Cd" => 48,
+        "In" => 49,
+        "Sn" => 50,
+        "Sb" => 51,
+        "Te" => 52,
+        "I" => 53,
+        "Xe" => 54,
+        "Cs" => 55,
+        "Ba" => 56,
+        "La" => 57,
+        "Lu" => 71,
+        "Hf" => 72,
+        "Ta" => 73,
+        "W" => 74,
+        "Re" => 75,
+        "Os" => 76,
+        "Ir" => 77,
+        "Pt" => 78,
+        "Au" => 79,
+        "Hg" => 80,
+        "Tl" => 81,
+        "Pb" => 82,
+        "Bi" => 83,
+        "Po" => 84,
+        "At" => 85,
+        "Rn" => 86,
+        "Fr" => 87,
+        "Ra" => 88,
+        "Ac" => 89,
+        "Th" => 90,
+        _ => return None,
+    };
+    Some(n)
+}
+
+/// METAL/METAL2 nType flags, from the reference's ElData table.
+fn is_metal(el: i32) -> bool {
+    matches!(
+        el,
+        3 | 4
+            | 11
+            | 12
+            | 13
+            | 19
+            | 20
+            | 21
+            | 22
+            | 23
+            | 24
+            | 25
+            | 26
+            | 27
+            | 28
+            | 29
+            | 30
+            | 31
+            | 37
+            | 38
+            | 39
+            | 40
+            | 41
+            | 42
+            | 43
+            | 44
+            | 45
+            | 46
+            | 47
+            | 48
+            | 55
+            | 56
+            | 57
+            | 58
+            | 59
+            | 60
+            | 61
+            | 62
+            | 63
+            | 64
+            | 65
+            | 66
+            | 67
+            | 68
+            | 69
+            | 70
+            | 71
+            | 72
+            | 73
+            | 74
+            | 75
+            | 76
+            | 77
+            | 78
+            | 79
+            | 80
+            | 81
+            | 82
+            | 83
+            | 84
+            | 85
+            | 86
+            | 87
+            | 88
+            | 89
+            | 90
+            | 91
+            | 92
+            | 93
+            | 94
+            | 95
+            | 96
+            | 97
+            | 98
+            | 99
+            | 100
+            | 101
+            | 102
+            | 103
+    )
+}
+
+/// Z atoms: the centers the O/S/Se/Te terminal classification keys on.
+fn is_z_atom(el: i32) -> bool {
+    matches!(
+        el,
+        5 | 6 | 7 | 14 | 15 | 33 | 51 | 16 | 34 | 52 | 17 | 35 | 53
+    )
+}
+
+/// Valences by (element, charge state -2..+2), from the reference's
+/// cValence table. Zero = the state is not allowed.
+fn el_valences(el: i32, charge: i32) -> [u8; 5] {
+    let idx = (charge.clamp(-2, 2) + 2) as usize;
+    let row: [[u8; 5]; 5] = match el {
+        1 => [[0u8, 0, 1, 0, 0]; 5],               // H
+        2 | 10 | 18 | 36 | 54 | 86 => [[0; 5]; 5], // noble gases
+        3 | 11 | 19 | 37 | 55 | 87 => [[0u8, 0, 1, 0, 0]; 5],
+        4 => [[0, 0, 2, 1, 0]; 5], // Be
+        5 => [
+            [3, 0, 0, 0, 0],
+            [4, 0, 0, 0, 0],
+            [3, 0, 0, 0, 0],
+            [2, 0, 0, 0, 0],
+            [1, 0, 0, 0, 0],
+        ], // B
+        6 => [
+            [2, 0, 0, 0, 0],
+            [3, 0, 0, 0, 0],
+            [4, 0, 0, 0, 0],
+            [3, 0, 0, 0, 0],
+            [2, 0, 0, 0, 0],
+        ], // C
+        7 => [
+            [1, 0, 0, 0, 0],
+            [2, 0, 0, 0, 0],
+            [3, 5, 0, 0, 0],
+            [4, 0, 0, 0, 0],
+            [3, 0, 0, 0, 0],
+        ], // N
+        8 => [
+            [0; 5],
+            [1, 0, 0, 0, 0],
+            [2, 0, 0, 0, 0],
+            [3, 5, 0, 0, 0],
+            [4, 0, 0, 0, 0],
+        ], // O
+        9 => [
+            [0; 5],
+            [0; 5],
+            [1, 0, 0, 0, 0],
+            [2, 0, 0, 0, 0],
+            [3, 5, 0, 0, 0],
+        ], // F
+        12 => [[0; 5], [0; 5], [2, 0, 0, 0, 0], [1, 0, 0, 0, 0], [0; 5]], // Mg
+        13 => [
+            [3, 5, 0, 0, 0],
+            [4, 0, 0, 0, 0],
+            [3, 0, 0, 0, 0],
+            [2, 0, 0, 0, 0],
+            [1, 0, 0, 0, 0],
+        ], // Al
+        14 => [
+            [2, 0, 0, 0, 0],
+            [3, 5, 0, 0, 0],
+            [4, 0, 0, 0, 0],
+            [3, 0, 0, 0, 0],
+            [2, 0, 0, 0, 0],
+        ], // Si
+        15 => [
+            [1, 3, 5, 7, 0],
+            [2, 4, 6, 0, 0],
+            [3, 5, 0, 0, 0],
+            [4, 0, 0, 0, 0],
+            [3, 0, 0, 0, 0],
+        ], // P
+        16 => [
+            [0; 5],
+            [1, 3, 5, 7, 0],
+            [2, 4, 6, 0, 0],
+            [3, 5, 0, 0, 0],
+            [4, 0, 0, 0, 0],
+        ], // S
+        17 | 35 | 53 => [
+            [0; 5],
+            [0; 5],
+            [1, 3, 5, 7, 0],
+            [2, 4, 6, 0, 0],
+            [3, 5, 0, 0, 0],
+        ], // Cl/Br/I
+        20 => [[0; 5], [0; 5], [2, 0, 0, 0, 0], [1, 0, 0, 0, 0], [0; 5]], // Ca
+        31 => [
+            [3, 5, 0, 0, 0],
+            [4, 0, 0, 0, 0],
+            [3, 0, 0, 0, 0],
+            [0; 5],
+            [1, 0, 0, 0, 0],
+        ], // Ga
+        32 => [
+            [2, 4, 6, 0, 0],
+            [3, 5, 0, 0, 0],
+            [4, 0, 0, 0, 0],
+            [3, 0, 0, 0, 0],
+            [0; 5],
+        ], // Ge
+        33 => [
+            [1, 3, 5, 7, 0],
+            [2, 4, 6, 0, 0],
+            [3, 5, 0, 0, 0],
+            [4, 0, 0, 0, 0],
+            [3, 0, 0, 0, 0],
+        ], // As
+        34 => [
+            [0; 5],
+            [1, 3, 5, 7, 0],
+            [2, 4, 6, 0, 0],
+            [3, 5, 0, 0, 0],
+            [4, 0, 0, 0, 0],
+        ], // Se
+        _ => return [0; 5],
+    };
+    row[idx]
+}
+
+/// The per-atom view the classifier reads, owning the standardized
+/// H/charge state. The doubled bond-order sum (aromatic = 3) keeps
+/// the arithmetic integral.
+struct ProtonContext {
+    element: Vec<i32>,
+    neighbors: Vec<Vec<usize>>,
+    cbv2: Vec<i32>,
+    h: Vec<u32>,
+    charge: Vec<i32>,
+}
+
+impl ProtonContext {
+    fn new(structure: &Structure) -> Self {
+        let n = structure.atoms.len();
+        let mut neighbors = vec![Vec::new(); n];
+        let mut cbv2 = vec![0i32; n];
+        for &(from, to, order) in &structure.bonds {
+            neighbors[from].push(to);
+            neighbors[to].push(from);
+            let o = if order == 4 { 3 } else { 2 * order as i32 };
+            cbv2[from] += o;
+            cbv2[to] += o;
+        }
+        ProtonContext {
+            element: structure
+                .atoms
+                .iter()
+                .map(|atom| el_number(&atom.element).unwrap_or(-1))
+                .collect(),
+            neighbors,
+            cbv2,
+            h: structure.hydrogens(),
+            charge: structure.atoms.iter().map(|atom| atom.charge).collect(),
+        }
+    }
+
+    fn valence(&self, atom: usize) -> usize {
+        self.neighbors[atom].len()
+    }
+
+    /// detect_unusual_el_valence: chem valence (cbv + H) must equal
+    /// some allowed valence for the charge state.
+    fn unusual_valence(&self, atom: usize) -> bool {
+        let h = self.h[atom] as i32;
+        if self.valence(atom) == 0 && h == 0 {
+            return false;
+        }
+        let charge = self.charge[atom];
+        if !(-2..=2).contains(&charge) {
+            return self.cbv2[atom] != 2 * self.valence(atom) as i32;
+        }
+        if el_valences(self.element[atom], charge) == [0; 5]
+            && self.cbv2[atom] == 2 * self.valence(atom) as i32
+        {
+            return false;
+        }
+        let chem_valence2 = self.cbv2[atom] + 2 * h;
+        !el_valences(self.element[atom], charge)
+            .iter()
+            .any(|&v| v > 0 && 2 * v as i32 == chem_valence2)
+    }
+}
+
+/// GetAtomChargeType: (type, mask) for the atom under the current
+/// standardized H/charge state.
+fn atom_charge_type(context: &ProtonContext, atom: usize) -> (u16, u32) {
+    let (el, charge, h) = (context.element[atom], context.charge[atom], context.h[atom]);
+    let valence = context.valence(atom);
+    let mut typ = att::NONE;
+    let mut mask = 0u32;
+
+    if !(-1..=1).contains(&charge) {
+        return (typ, mask);
+    }
+    if valence == 0 && charge == 1 && h == 0 && el == 1 {
+        return (att::PROTON, atbit::PROTON);
+    }
+    if valence == 0 && charge == -1 && h == 0 && matches!(el, 9 | 17 | 35 | 53) {
+        return (att::HAL_ANION, atbit::HAL_ANION);
+    }
+    if (valence == 0 && charge == 0 && h == 1 && matches!(el, 9 | 17 | 35 | 53))
+        || (valence == 0 && charge == 0 && h == 2 && matches!(el, 8 | 16 | 34 | 52))
+    {
+        return (att::HAL_ACID, atbit::HAL_ACID);
+    }
+    if context.unusual_valence(atom) {
+        return (typ, mask);
+    }
+
+    let mut num_z = 0usize;
+    let mut num_o = 0usize;
+    let mut unsat_n_has_terminal_o = 0usize;
+    for &neigh in &context.neighbors[atom] {
+        if context.charge[neigh] != 0 && charge != 0 {
+            // adjacent-ion rule: the atom is neither donor nor acceptor
+            return (att::NONE, 0);
+        }
+        if context.unusual_valence(neigh) {
+            return (typ, mask);
+        }
+        if is_z_atom(context.element[neigh]) {
+            num_z += 1;
+        }
+        num_o += (context.element[neigh] == 8) as usize;
+        if el == 7 && valence == 2 && charge == 0 {
+            let nv = context.valence(neigh);
+            if nv == 1
+                && context.cbv2[neigh] == 4
+                && matches!(context.element[neigh], 8 | 16 | 34 | 52)
+            {
+                unsat_n_has_terminal_o += 1;
+            }
+        }
+    }
+
+    if matches!(el, 8 | 16 | 34 | 52) {
+        // O, S, Se, Te terminal chemistry
+        if charge == 1 {
+            if h > 0 {
+                return (att::O_PLUS, atbit::OH_PLUS);
+            }
+            return (att::O_PLUS, atbit::O_PLUS);
+        }
+        if valence > 1 {
+            return (typ, mask);
+        }
+        if valence == 1 && num_z == 0 && num_o == 0 {
+            return (typ, mask); // #C3: charges only, no donor/acceptor
+        }
+        if valence == 0 {
+            if charge == -1 && h == 1 {
+                return (att::OH_MINUS, atbit::O_MINUS);
+            }
+            return (typ, mask);
+        }
+        let neigh = context.neighbors[atom][0];
+        let (nel, ncharge) = (context.element[neigh], context.charge[neigh]);
+        let nvalence = context.valence(neigh);
+        let ncbv2 = context.cbv2[neigh];
+        if ncharge == 0 && nel == 6 && ncbv2 > 2 * nvalence as i32 {
+            // =C-OH, =C-O(-), -C=O
+            typ = att::ACIDIC_CO;
+            if h == 1 {
+                mask |= atbit::COH;
+            } else if charge == -1 {
+                mask |= atbit::CO_MINUS;
+            } else if h == 0 && charge == 0 {
+                mask |= atbit::CO;
+            } else {
+                mask |= atbit::ERRORS;
+            }
+        } else if ncharge == 0 && matches!(nel, 8 | 16 | 34 | 52) && ncbv2 == 2 * nvalence as i32 {
+            // -O-OH, -O-O(-)
+            typ = att::OO;
+            if h == 1 {
+                mask |= atbit::OOH;
+            } else if charge == -1 {
+                mask |= atbit::OO_MINUS;
+            } else {
+                mask |= atbit::ERRORS;
+            }
+        } else if ncharge == 0 && nel == 6 && ncbv2 == 2 * nvalence as i32 && el != 8 {
+            // >C-SH, >C-S(-)
+            typ = att::ACIDIC_S;
+            if h == 1 {
+                mask |= atbit::CSH;
+            } else if charge == -1 {
+                mask |= atbit::CS_MINUS;
+            } else {
+                mask |= atbit::ERRORS;
+            }
+        } else if nel == 7
+            && nvalence == 2
+            && (context.h[neigh] == 0 || (context.h[neigh] == 1 && ncharge == 1))
+        {
+            typ = att::NO;
+            if h == 1 {
+                mask |= atbit::NOH;
+            } else if charge == -1 {
+                mask |= atbit::NO_MINUS;
+            } else if ncharge == 1 || ncharge == 0 {
+                mask |= atbit::NO2;
+            } else {
+                mask |= atbit::ERRORS;
+            }
+        } else if nel == 7 {
+            typ = att::N_O;
+            if h == 1 {
+                mask |= atbit::N_OH;
+            } else if charge == -1 {
+                mask |= atbit::N_O_MINUS;
+            } else if ncharge == 1 {
+                mask |= atbit::N_O;
+            } else {
+                mask |= atbit::ERRORS;
+            }
+        } else if nel != 6 && nel != 8 && !is_metal(nel) && ncbv2 > 2 * nvalence as i32 {
+            // Z \ {N, C}: P, As, Sb, S, Se, Te, Cl, Br, I
+            if context.cbv2[atom] == 2 && is_zox(context, atom, 0) > 0 {
+                typ = att::ZOO;
+                if h == 1 {
+                    mask |= atbit::ZOOH;
+                } else if charge == -1 {
+                    mask |= atbit::ZOO_MINUS;
+                } else {
+                    mask |= atbit::ERRORS;
+                }
+            } else {
+                typ = att::OTHER_ZO;
+                if h == 1 {
+                    mask |= atbit::ZOH;
+                } else if charge == -1 {
+                    mask |= atbit::ZO_MINUS;
+                } else if h == 0 {
+                    mask |= atbit::ZO;
+                } else {
+                    mask |= atbit::ERRORS;
+                }
+            }
+        } else if charge == -1 && !is_metal(nel) {
+            typ = att::OTHER_NEG_O;
+            mask |= atbit::O_MINUS;
+        }
+        return (typ, mask);
+    }
+
+    if matches!(el, 7 | 15)
+        && (0..=3).contains(&valence)
+        && context.cbv2[atom] + 2 * h as i32 == 2 * (3 + charge)
+    {
+        // N, P (neutral valence 3); atoms whose neighbors are all
+        // non-Z are ignored here (the C's goto count_mask_bits with
+        // no type)
+        if valence > 0 && num_z == 0 {
+            return (att::NONE, 0);
+        }
+        typ = if el == 7 { att::ATOM_N } else { att::ATOM_P };
+        match charge {
+            -1 => {
+                if el == 7 {
+                    mask |= atbit::N_MINUS;
+                    if h > 0 {
+                        mask |= atbit::NP_H;
+                    }
+                }
+            }
+            0 => {
+                if h > 0 {
+                    mask |= atbit::NP_H;
+                } else if unsat_n_has_terminal_o == 1 {
+                    mask |= atbit::ON;
+                } else {
+                    mask |= atbit::NP;
+                }
+            }
+            1 => {
+                if h > 0 {
+                    mask |= atbit::NP_PROTON;
+                } else if context.cbv2[atom] > 2 * valence as i32 {
+                    mask |= atbit::NP_PLUS;
+                } else {
+                    typ = att::NONE; // onium cations >N(+)< ignored
+                }
+            }
+            _ => mask |= atbit::ERRORS,
+        }
+    }
+    (typ, mask)
+}
+
+/// IsZOX: terminal =O/S/Se/Te count on the (single) Z neighbor.
+fn is_zox(context: &ProtonContext, atom: usize, ord: usize) -> i32 {
+    let z = context.neighbors[atom][ord];
+    let mut count = 0;
+    for &neigh in &context.neighbors[z] {
+        if neigh == atom {
+            continue;
+        }
+        if context.valence(neigh) == 1
+            && context.cbv2[neigh] == 4
+            && context.charge[neigh] == 0
+            && matches!(context.element[neigh], 8 | 16 | 34 | 52)
+        {
+            count += 1;
+        }
+    }
+    count
+}
+
+/// Recompute the totals the driver reads. The C maintains them
+/// incrementally through the classifier's delta parameter; a fresh
+/// scan is equivalent and keeps the mutation sites dumb.
+fn totals(context: &ProtonContext) -> [i64; attot::ARRAY_LEN] {
+    let mut totals = [0i64; attot::ARRAY_LEN];
+    for atom in 0..context.element.len() {
+        let (_, mask) = atom_charge_type(context, atom);
+        if mask != 0 && mask & atbit::ERRORS == 0 {
+            for (slot, total) in totals.iter_mut().enumerate().take(32) {
+                if mask & (1 << slot) != 0 {
+                    *total += 1;
+                }
+            }
+        }
+        if context.charge[atom] != 0 {
+            totals[attot::TOT_CHARGE] += context.charge[atom] as i64;
+            totals[attot::NUM_CHARGES] += 1;
+        }
+    }
+    totals
+}
+
+/// The standardization result: adjusted H counts and charges per atom
+/// plus the net proton shift for the /p accounting.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct StandardizedProtons {
+    pub h: Vec<u32>,
+    pub charge: Vec<i32>,
+    pub removed_protons: u32,
+    pub added_protons: u32,
+}
+
+/// RemoveNPProtonsAndAcidCharges (simple variants). Returns None when
+/// the structure carries no charges (the no-op gate) or nothing
+/// changed.
+pub fn standardize(structure: &Structure) -> Option<StandardizedProtons> {
+    let mut context = ProtonContext::new(structure);
+    let initial = totals(&context);
+    if initial[attot::NUM_CHARGES] == 0 {
+        return None;
+    }
+
+    let mut removed = 0u32;
+    let mut added = 0u32;
+
+    // 5.1a: protons off charged N,P and OH(+)
+    if initial[attot::NP_PROTON] + initial[attot::OH_PLUS] > 0 {
+        removed += simple_remove_hplus_npo(&mut context);
+    }
+
+    // 5.2a: acidic protons off neutral atoms (net +), protons onto
+    // anions (net -)
+    let after = totals(&context);
+    if after[attot::TOT_CHARGE] > 0 {
+        removed += simple_remove_acidic_protons(&mut context, after[attot::TOT_CHARGE]);
+    } else if after[attot::TOT_CHARGE] < 0 {
+        added += simple_add_acidic_protons(&mut context, -after[attot::TOT_CHARGE]);
+    }
+
+    if removed == 0 && added == 0 {
+        return None;
+    }
+    Some(StandardizedProtons {
+        h: context.h,
+        charge: context.charge,
+        removed_protons: removed,
+        added_protons: added,
+    })
+}
+
+/// SimpleRemoveHplusNPO: every N/P-H(+) and OH(+) loses its proton.
+fn simple_remove_hplus_npo(context: &mut ProtonContext) -> u32 {
+    let mut removed = 0;
+    for atom in 0..context.h.len() {
+        let (typ, mask) = atom_charge_type(context, atom);
+        if typ & PR_SIMPLE_TYP != 0 && mask & PR_SIMPLE_MSK != 0 {
+            context.h[atom] -= 1;
+            context.charge[atom] -= 1;
+            removed += 1;
+        }
+    }
+    removed
+}
+
+/// Steps shared by the remove/add scans: count eligible atoms per
+/// mask step, cut the scan at the step where the quota is reached,
+/// then apply in priority order.
+fn step_quota(num_per_step: &[i64], quota: i64) -> Option<(i64, usize)> {
+    let total: i64 = num_per_step.iter().sum();
+    if total == 0 {
+        return None;
+    }
+    let max_step = num_per_step
+        .iter()
+        .scan(0i64, |acc, &n| {
+            *acc += n;
+            Some(*acc)
+        })
+        .position(|cum| cum >= quota)
+        .unwrap_or(num_per_step.len() - 1);
+    Some((total, max_step))
+}
+
+/// SimpleRemoveAcidicProtons: up to `quota` acidic protons off
+/// neutral atoms, mask-priority order.
+fn simple_remove_acidic_protons(context: &mut ProtonContext, quota: i64) -> u32 {
+    let mut num_per_step = vec![0i64; AR_STEPS.len()];
+    for atom in 0..context.h.len() {
+        if context.charge[atom] != 0 || context.h[atom] == 0 {
+            continue;
+        }
+        let (typ, mask) = atom_charge_type(context, atom);
+        for (step, &(step_typ, step_msk)) in AR_STEPS.iter().enumerate() {
+            if typ & step_typ != 0 && mask & step_msk != 0 {
+                num_per_step[step] += 1;
+                break;
+            }
+        }
+    }
+    let Some((_, max_step)) = step_quota(&num_per_step, quota) else {
+        return 0;
+    };
+
+    let mut removed: u32 = 0;
+    for atom in 0..context.h.len() {
+        if removed as i64 >= quota {
+            break;
+        }
+        if context.charge[atom] != 0 || context.h[atom] == 0 {
+            continue;
+        }
+        let (typ, mask) = atom_charge_type(context, atom);
+        for (step, &(step_typ, step_msk)) in AR_STEPS.iter().enumerate() {
+            if step > max_step || num_per_step[step] == 0 {
+                continue;
+            }
+            if typ & step_typ != 0 && mask & step_msk != 0 {
+                context.h[atom] -= 1;
+                context.charge[atom] -= 1;
+                num_per_step[step] -= 1;
+                removed += 1;
+                break;
+            }
+        }
+    }
+    removed
+}
+
+/// SimpleAddAcidicProtons: up to `quota` protons onto anionic
+/// heteroatoms, mask-priority order.
+fn simple_add_acidic_protons(context: &mut ProtonContext, quota: i64) -> u32 {
+    let mut num_per_step = vec![0i64; AA_STEPS.len()];
+    for atom in 0..context.h.len() {
+        if context.charge[atom] != -1 {
+            continue;
+        }
+        let (typ, mask) = atom_charge_type(context, atom);
+        for (step, &(step_typ, step_msk)) in AA_STEPS.iter().enumerate() {
+            if typ & step_typ != 0 && mask & step_msk != 0 {
+                num_per_step[step] += 1;
+                break;
+            }
+        }
+    }
+    let Some((_, max_step)) = step_quota(&num_per_step, quota) else {
+        return 0;
+    };
+
+    let mut added: u32 = 0;
+    for atom in 0..context.h.len() {
+        if added as i64 >= quota {
+            break;
+        }
+        if context.charge[atom] != -1 {
+            continue;
+        }
+        let (typ, mask) = atom_charge_type(context, atom);
+        for (step, &(step_typ, step_msk)) in AA_STEPS.iter().enumerate() {
+            if step > max_step || num_per_step[step] == 0 {
+                continue;
+            }
+            if typ & step_typ != 0 && mask & step_msk != 0 {
+                context.h[atom] += 1;
+                context.charge[atom] += 1;
+                num_per_step[step] -= 1;
+                added += 1;
+                break;
+            }
+        }
+    }
+    added
+}
+
+#[cfg(test)]
+mod tests {
+    use super::standardize;
+    use crate::graph::{AtomRecord, Structure};
+
+    fn structure(atoms: Vec<(&str, i32, u32)>, bonds: Vec<(usize, usize, u32)>) -> Structure {
+        Structure {
+            atoms: atoms
+                .into_iter()
+                .map(|(element, charge, h_count)| AtomRecord {
+                    element: element.to_string(),
+                    h_count,
+                    charge,
+                    h_pinned: false,
+                    isotope: 0,
+                })
+                .collect(),
+            bonds,
+            stereo_bonds: Default::default(),
+            positions: Default::default(),
+            isotopic_h: Default::default(),
+        }
+    }
+
+    #[test]
+    fn the_neutral_structure_is_a_no_op() {
+        let s = structure(vec![("C", 0, 0), ("O", 0, 0)], vec![(0, 1, 1)]);
+        assert_eq!(standardize(&s), None);
+    }
+
+    #[test]
+    fn the_anion_gains_its_proton() {
+        // Acetate: the standardized skeleton is the acid; the added
+        // proton rides /p as -1.
+        let s = structure(
+            vec![("C", 0, 3), ("C", 0, 0), ("O", 0, 0), ("O", -1, 0)],
+            vec![(0, 1, 1), (1, 2, 2), (1, 3, 1)],
+        );
+        let std = standardize(&s).expect("acetate standardizes");
+        assert_eq!(std.added_protons, 1);
+        assert_eq!(std.removed_protons, 0);
+        assert_eq!(std.charge[3], 0);
+        assert_eq!(std.h[3], 1);
+        assert!(std.h.iter().all(|_| true));
+    }
+
+    #[test]
+    fn the_cationic_acid_loses_its_acidic_proton() {
+        // Ammonium acetate (covalent reading): the +1 on nitrogen
+        // drives an acidic proton off the carboxyl — the oracle's b53
+        // mechanism on a minimal body.
+        let s = structure(
+            vec![
+                ("N", 1, 3),
+                ("C", 0, 0),
+                ("C", 0, 0),
+                ("O", 0, 0),
+                ("O", 0, 0),
+            ],
+            vec![(0, 1, 1), (1, 2, 1), (2, 3, 2), (2, 4, 1)],
+        );
+        let std = standardize(&s).expect("cationic acid standardizes");
+        assert_eq!(std.removed_protons, 1);
+        // 5.1a removed the N-H(+) proton; the acid proton stays.
+        assert_eq!(std.charge[0], 0);
+        assert_eq!(std.h[0], 2);
+    }
+
+    #[test]
+    fn ammonium_loses_the_proton_on_the_charged_nitrogen() {
+        let s = structure(vec![("N", 1, 4)], vec![]);
+        let std = standardize(&s).expect("ammonium standardizes");
+        assert_eq!(std.removed_protons, 1);
+        assert_eq!(std.h[0], 3);
+        assert_eq!(std.charge[0], 0);
+    }
+
+    #[test]
+    fn the_dianion_gains_two_protons() {
+        // Sulfate: the two single-bonded oxygens are the anionic
+        // sites; one proton each.
+        let s = structure(
+            vec![
+                ("S", 0, 0),
+                ("O", 0, 0),
+                ("O", 0, 0),
+                ("O", -1, 0),
+                ("O", -1, 0),
+            ],
+            vec![(0, 1, 2), (0, 2, 2), (0, 3, 1), (0, 4, 1)],
+        );
+        let std = standardize(&s).expect("sulfate standardizes");
+        assert_eq!(std.added_protons, 2);
+        assert!(std.charge.iter().all(|&charge| charge == 0));
+    }
+}

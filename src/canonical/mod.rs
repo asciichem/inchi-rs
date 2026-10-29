@@ -20,6 +20,7 @@ pub mod bond_stereo;
 pub mod emit;
 mod invariants;
 mod partition;
+pub mod protons;
 mod search;
 pub mod stereo;
 mod table;

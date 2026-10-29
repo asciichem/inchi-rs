@@ -185,6 +185,11 @@ pub fn hydrogen_adjustment(structure: &Structure) -> i32 {
 /// loses one. The `/h` layer reads these; the formula layer's total
 /// is their sum.
 pub fn adjusted_hydrogens(structure: &Structure) -> Vec<u32> {
+    // A fully pinned structure already carries the standardized
+    // (DE)PROTONATION state — no further adjustment.
+    if structure.atoms.iter().all(|atom| atom.h_pinned) {
+        return structure.hydrogens();
+    }
     let mut counts = structure.hydrogens();
     let parent_anion = first_charged_heteroatom(structure, false);
     let salt_anion = first_charged_heteroatom(structure, true);
