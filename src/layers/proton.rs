@@ -1,11 +1,23 @@
-//! The `/p` layer (M1 scope): the ±1 proton standardization marker.
+//! The `/p` layer: the net proton shift the (DE)PROTONATION
+//! normalization applied — protons removed from the submitted
+//! structure read positive (added back), protons added read negative
+//! — or, when no normalization fired, the ±1 heuristic marker.
 
 use crate::error::Result;
 use crate::graph::Structure;
 use crate::layers::standardization;
 use crate::layers::LayerEmitter;
 
-pub struct ProtonLayer;
+#[derive(Default)]
+pub struct ProtonLayer {
+    shift: i32,
+}
+
+impl ProtonLayer {
+    pub fn with_shift(shift: i32) -> Self {
+        ProtonLayer { shift }
+    }
+}
 
 impl LayerEmitter for ProtonLayer {
     fn name(&self) -> &'static str {
@@ -22,7 +34,11 @@ impl LayerEmitter for ProtonLayer {
 
     fn emit(&self, structure: &Structure) -> Result<Option<String>> {
         standardization::ensure_within_m1(structure)?;
-        // The segment is the full InChI text: `p+1`, `p-1`, ...
+        if self.shift != 0 {
+            // The segment is the full InChI text: `p+1`, `p-1`, ...
+            let sign = if self.shift > 0 { '+' } else { '-' };
+            return Ok(Some(format!("p{sign}{}", self.shift.abs())));
+        }
         Ok(standardization::proton_layer(structure))
     }
 }
@@ -52,7 +68,10 @@ mod tests {
             positions: Default::default(),
             isotopic_h: Default::default(),
         };
-        assert_eq!(ProtonLayer.emit(&s).unwrap(), Some("p+1".to_string()));
+        assert_eq!(
+            ProtonLayer::default().emit(&s).unwrap(),
+            Some("p+1".to_string())
+        );
 
         // A lone O-H anion is not carbon-carried: the parent path —
         // /p-1 with the parent water (fixture identity/hydroxide:
@@ -65,7 +84,10 @@ mod tests {
             positions: Default::default(),
             isotopic_h: Default::default(),
         };
-        assert_eq!(ProtonLayer.emit(&s).unwrap(), Some("p-1".to_string()));
+        assert_eq!(
+            ProtonLayer::default().emit(&s).unwrap(),
+            Some("p-1".to_string())
+        );
     }
 
     #[test]
@@ -85,7 +107,7 @@ mod tests {
             positions: Default::default(),
             isotopic_h: Default::default(),
         };
-        assert_eq!(ProtonLayer.emit(&s).unwrap(), None);
+        assert_eq!(ProtonLayer::default().emit(&s).unwrap(), None);
     }
 
     #[test]
@@ -107,7 +129,7 @@ mod tests {
             positions: Default::default(),
             isotopic_h: Default::default(),
         };
-        assert_eq!(ProtonLayer.emit(&s).unwrap(), None);
+        assert_eq!(ProtonLayer::default().emit(&s).unwrap(), None);
 
         let s = Structure {
             atoms: vec![
@@ -122,7 +144,7 @@ mod tests {
             positions: Default::default(),
             isotopic_h: Default::default(),
         };
-        assert_eq!(ProtonLayer.emit(&s).unwrap(), None);
+        assert_eq!(ProtonLayer::default().emit(&s).unwrap(), None);
     }
 
     #[test]
@@ -141,7 +163,10 @@ mod tests {
             positions: Default::default(),
             isotopic_h: Default::default(),
         };
-        assert_eq!(ProtonLayer.emit(&s).unwrap(), Some("p+1".to_string()));
+        assert_eq!(
+            ProtonLayer::default().emit(&s).unwrap(),
+            Some("p+1".to_string())
+        );
 
         let s = Structure {
             atoms: vec![
@@ -155,7 +180,10 @@ mod tests {
             positions: Default::default(),
             isotopic_h: Default::default(),
         };
-        assert_eq!(ProtonLayer.emit(&s).unwrap(), Some("p+1".to_string()));
+        assert_eq!(
+            ProtonLayer::default().emit(&s).unwrap(),
+            Some("p+1".to_string())
+        );
     }
 
     #[test]

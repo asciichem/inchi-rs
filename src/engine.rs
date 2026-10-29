@@ -21,9 +21,23 @@ impl Engine {
         let mut structure = molfile::parse(input)?;
         standardization::normalize_internal_salts(&mut structure);
         structure.fold_explicit_hydrogens();
+        // The (DE)PROTONATION normalization: charged structures read
+        // as their conjugate form before any layer runs; the pinned
+        // H/charge state is final.
+        let mut proton_shift = 0;
+        if let Some(std) = crate::canonical::protons::standardize(&structure) {
+            proton_shift = std.removed_protons as i32 - std.added_protons as i32;
+            for (atom, h) in structure.atoms.iter_mut().zip(&std.h) {
+                atom.h_count = *h;
+                atom.h_pinned = true;
+            }
+            for (atom, charge) in structure.atoms.iter_mut().zip(&std.charge) {
+                atom.charge = *charge;
+            }
+        }
         Ok(Engine {
             structure,
-            layers: default_layers(),
+            layers: default_layers(proton_shift),
         })
     }
 

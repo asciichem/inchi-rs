@@ -771,6 +771,9 @@ fn build_links(context: &Context) -> Vec<BTreeSet<usize>> {
             changed = charge_round(context, &mut state);
         }
         if !changed {
+            changed = salt_round(context, &mut state);
+        }
+        if !changed {
             changed = alternation_round(context, &mut state);
         }
         if !changed && !alternated {
@@ -1076,7 +1079,198 @@ fn alternation_round(context: &Context, state: &mut Registration) -> bool {
     changed
 }
 
-/// One registration round: the reference's MarkTautomerGroups 1,3
+/// The salt-subtype bits (incomdef.h:97): H-donor, (-)-donor,
+/// acceptor.
+const SALT_DONOR_H: u8 = 1;
+const SALT_DONOR_NEG: u8 = 2;
+const SALT_ACCEPTOR: u8 = 4;
+
+/// The reference's GetSaltChargeType: a terminal O/S/Se/Te of standard
+/// valence on an unsaturated, uncharged carbon (SALT_WITH_PROTONS=1
+/// allows =C(H)-OH / -C(H)=O). Subtypes: H-donor, (-)-donor, the C=O
+/// acceptor; t-group members inherit group-level subtypes.
+fn salt_charge_type(context: &Context, state: &Registration, atom: usize) -> Option<u8> {
+    let record = &context.structure.atoms[atom];
+    if context.neighbors[atom].len() != 1 || record.charge < -1 || record.charge > 0 {
+        return None;
+    }
+    if !matches!(record.element.as_str(), "O" | "S" | "Se" | "Te") {
+        return None;
+    }
+    let valence_needed: i32 = match (record.element.as_str(), record.charge) {
+        ("O", 0) | ("S", 0) | ("Se", 0) | ("Te", 0) => 2,
+        (_, -1) => 1,
+        _ => return None,
+    };
+    if context.bond_sum2[atom] / 2 + context.mobile(atom) as i32 != valence_needed {
+        return None;
+    }
+    let (carbon, _) = context.neighbors[atom][0];
+    let carbon_record = &context.structure.atoms[carbon];
+    if carbon_record.element != "C"
+        || carbon_record.charge != 0
+        || context.bond_sum2[carbon] / 2 + context.mobile(carbon) as i32 != 4
+        || context.bond_sum2[carbon] / 2 == context.neighbors[carbon].len() as i32
+    {
+        return None;
+    }
+    let mut subtype = 0;
+    if let Some(group) = state.group_of[atom] {
+        let (mobile, negative) = group_h_and_neg(context, state, group);
+        if mobile > negative {
+            subtype |= SALT_DONOR_H;
+        }
+        if negative > 0 {
+            subtype |= SALT_DONOR_NEG;
+        }
+        return Some(subtype | SALT_ACCEPTOR);
+    }
+    if record.charge == -1 {
+        subtype |= SALT_DONOR_NEG;
+    }
+    if record.charge <= 0 && context.mobile(atom) > 0 {
+        subtype |= SALT_DONOR_H;
+    }
+    if record.charge == 0 && context.bond_sum2[atom] / 2 == 2 {
+        subtype |= SALT_ACCEPTOR;
+    }
+    Some(subtype)
+}
+
+/// The reference's GetOtherSaltChargeType (bAccept_O=1): a tautomeric
+/// endpoint adjacent to a centerpoint-capable neighbor through a bond
+/// matching the atom's role.
+fn other_salt_charge_type(context: &Context, state: &Registration, atom: usize) -> Option<u8> {
+    let role = context.endpoint(state, atom)?;
+    let mut subtype = 0;
+    let mut centerpoints = 0;
+    for &(centerpoint, _kind) in &context.neighbors[atom] {
+        let bond = context.bond_type(state, atom, centerpoint);
+        let bond_allows = match role {
+            Role::Acceptor => {
+                matches!(bond, BondType::Double | BondType::Altern | BondType::Tautom)
+            }
+            Role::Donor => matches!(bond, BondType::Single | BondType::Altern | BondType::Tautom),
+        };
+        let center_capable = context.bond_sum2[centerpoint] / 2
+            > context.neighbors[centerpoint].len() as i32
+            || (context.bond_sum2[centerpoint] / 2 == context.neighbors[centerpoint].len() as i32
+                && (state.group_of[centerpoint].is_some()
+                    || state.c_point_of[centerpoint].is_some()));
+        if bond_allows && center_capable && context.is_centerpoint_elem(centerpoint) {
+            centerpoints += 1;
+            break;
+        }
+    }
+    if centerpoints == 0 {
+        return None;
+    }
+    if let Some(group) = state.group_of[atom] {
+        let (mobile, negative) = group_h_and_neg(context, state, group);
+        if mobile > negative {
+            subtype |= SALT_DONOR_H;
+        }
+        if negative > 0 {
+            subtype |= SALT_DONOR_NEG;
+        }
+        return Some(subtype | SALT_ACCEPTOR);
+    }
+    if role == Role::Acceptor {
+        subtype |= SALT_ACCEPTOR;
+    }
+    if role == Role::Donor {
+        if context.structure.atoms[atom].charge == -1 {
+            subtype |= SALT_DONOR_NEG;
+        }
+        if context.mobile(atom) > 0 {
+            subtype |= SALT_DONOR_H;
+        }
+    }
+    Some(subtype)
+}
+
+/// A t-group's (num[0], num[1]): the mobile H count and the negative
+/// charges among its members.
+fn group_h_and_neg(context: &Context, state: &Registration, group: usize) -> (i32, i32) {
+    let (mut mobile, mut negative) = (0, 0);
+    for (atom, membership) in state.group_of.iter().enumerate() {
+        if *membership == Some(group) {
+            mobile += context.mobile(atom) as i32;
+            if context.structure.atoms[atom].charge == -1 {
+                negative += 1;
+            }
+        }
+    }
+    (mobile, negative)
+}
+
+/// One salt round, the reference's MarkSaltChargeGroups (salt step 0):
+/// pair each H/(-)-donor candidate against each acceptor candidate in
+/// both orders; the balanced network confirms (ALT_PATH_MODE_4_SALT —
+/// the same setup and role prechecks as the tautomer check), and the
+/// pair registers as a t-group.
+fn salt_round(context: &Context, state: &mut Registration) -> bool {
+    let n = context.structure.atoms.len();
+    let candidates: Vec<(usize, u8)> = (0..n)
+        .filter_map(|atom| {
+            salt_charge_type(context, state, atom)
+                .or_else(|| other_salt_charge_type(context, state, atom))
+                .map(|subtype| (atom, subtype))
+        })
+        .collect();
+    if std::env::var_os("INCHI_TRACE_BNS").is_some() {
+        eprintln!("SALT cands: {:?}", candidates);
+    }
+    if candidates.len() <= 1 {
+        return false;
+    }
+    let subtype_all = candidates.iter().fold(0u8, |acc, &(_, s)| acc | s);
+    if subtype_all & SALT_ACCEPTOR == 0 {
+        return false;
+    }
+    // CHARGED_SALTS_ONLY: without a negative-charge donor (and unless
+    // every candidate is a tautomeric endpoint) the round declines.
+    let neg_present = subtype_all & SALT_DONOR_NEG != 0;
+    let all_other = candidates
+        .iter()
+        .all(|&(atom, _)| salt_charge_type(context, state, atom).is_none());
+    if std::env::var_os("INCHI_TRACE_BNS").is_some() {
+        eprintln!("SALT gate: subtype_all={subtype_all} neg={neg_present} all_other={all_other}");
+    }
+    if !neg_present || all_other {
+        return false;
+    }
+    let mut changed = false;
+    for i1 in 0..candidates.len() {
+        for i2 in (i1 + 1)..candidates.len() {
+            let (j1, j2) = (candidates[i1].0, candidates[i2].0);
+            if state.group_of[j1].is_some() && state.group_of[j1] == state.group_of[j2] {
+                continue;
+            }
+            for (donor, acceptor) in [(j1, j2), (j2, j1)] {
+                let subtype_of = |atom: usize| {
+                    candidates
+                        .iter()
+                        .find(|&&(a, _)| a == atom)
+                        .map(|&(_, s)| s)
+                        .unwrap_or(0)
+                };
+                if subtype_of(donor) & (SALT_DONOR_H | SALT_DONOR_NEG) == 0
+                    || subtype_of(acceptor) & SALT_ACCEPTOR == 0
+                {
+                    continue;
+                }
+                if context.alt_path_exists(state, acceptor, donor) {
+                    changed |= state.register(&[donor, acceptor]);
+                    break;
+                }
+            }
+        }
+    }
+    changed
+}
+
+/// One salt round, the reference's MarkSaltChargeGroups (salt step 0):
 /// phase. Each endpoint reaches a centerpoint through a π-class bond;
 /// the centerpoint's other endpoint neighbors are classified by bond
 /// (single = donor side with mobile H, double = acceptor, tautomeric

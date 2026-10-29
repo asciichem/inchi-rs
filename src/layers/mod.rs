@@ -59,14 +59,16 @@ pub trait LayerEmitter {
     fn emit(&self, structure: &Structure) -> Result<Option<String>>;
 }
 
-/// The engine's default layer set.
-pub fn default_layers() -> Vec<Box<dyn LayerEmitter>> {
+/// The engine's default layer set; `proton_shift` is the net proton
+/// change the (DE)PROTONATION normalization applied (see
+/// [`crate::canonical::protons`]).
+pub fn default_layers(proton_shift: i32) -> Vec<Box<dyn LayerEmitter>> {
     vec![
         Box::new(formula::FormulaLayer),
         Box::new(connection::ConnectionLayer),
         Box::new(hydrogen::HydrogenLayer),
         Box::new(charge::ChargeLayer),
-        Box::new(proton::ProtonLayer),
+        Box::new(proton::ProtonLayer::with_shift(proton_shift)),
         Box::new(stereo::BLayer),
         Box::new(stereo::TLayer),
         Box::new(stereo::MLayer),
