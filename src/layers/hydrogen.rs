@@ -11,6 +11,20 @@ use crate::layers::{order, LayerEmitter};
 
 pub struct HydrogenLayer;
 
+/// The negative charge riding /h groups that hold real mobile
+/// hydrogen, summed — the /q layer subtracts it from the fixed
+/// accounting. Charge-only groups (no mobile H) stay fixed: the
+/// reference never registered them as t-groups.
+pub fn mobile_charges(structure: &Structure) -> i32 {
+    let counts = standardization::adjusted_hydrogens(structure);
+    let ranks = canonical_ranks_for(structure);
+    crate::canonical::tautomer::mobile_groups(structure, &counts, &ranks)
+        .iter()
+        .filter(|group| group.count > group.charge)
+        .map(|group| group.charge as i32)
+        .sum()
+}
+
 /// The canonical ranks the /h and /i layers speak: the heavy-atom
 /// numbering under the standardized hydrogen counts (explicit H
 /// atoms are invisible vertices — see `graph_of`).
@@ -55,6 +69,10 @@ impl LayerEmitter for HydrogenLayer {
         let mut segment = hydrogen_segment(&by_rank).unwrap_or_default();
         let groups_text = groups
             .iter()
+            // A charge-only group (no mobile H) records nothing in
+            // /h — the oracle leaves such carboxylates unlisted, the
+            // charges folding into the fixed accounting.
+            .filter(|group| group.count > group.charge)
             .map(|group| {
                 let members: Vec<String> = group.ranks.iter().map(|r| r.to_string()).collect();
                 let count = if group.count > 1 {

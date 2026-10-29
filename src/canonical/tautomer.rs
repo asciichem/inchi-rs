@@ -317,6 +317,11 @@ struct Context<'a> {
     /// acetyl-carbon and nitro-nitrogen bonds the tautomer machinery
     /// may never cross (ALLOWED_EDGE) nor the network route.
     forbidden: BTreeSet<usize>,
+    /// Deprotonated endpoints' mobile units (the reference's
+    /// `nMobile += (charge == -1)`): on a fully pinned structure —
+    /// the (DE)PROTONATION-standardized state — a charge −1 counts
+    /// as a mobile unit exactly where no riding hydrogen stands.
+    charge_units: Vec<u32>,
 }
 
 impl<'a> Context<'a> {
@@ -326,6 +331,12 @@ impl<'a> Context<'a> {
         let mut neighbors = vec![Vec::new(); n];
         let mut bond_index = HashMap::new();
         let mut bond_sum2 = vec![0i32; n];
+        let pinned = structure.atoms.iter().all(|atom| atom.h_pinned);
+        let charge_units: Vec<u32> = structure
+            .atoms
+            .iter()
+            .map(|atom| (pinned && atom.charge == -1) as u32)
+            .collect();
         for (index, &(from, to, kind)) in structure.bonds.iter().enumerate() {
             // The INPUT kekule orders carry the valence arithmetic.
             let order2 = match kind {
@@ -351,6 +362,7 @@ impl<'a> Context<'a> {
             bond_sum2,
             rings,
             forbidden,
+            charge_units,
         }
     }
 
@@ -396,12 +408,13 @@ impl<'a> Context<'a> {
         }
     }
 
-    /// Mobile H the reference's `nMobile`. The ±1-standardized counts
-    /// already carry the anion's riding proton (an anionic O shows H 1
-    /// exactly where the reference shows num_H 0 plus one negative
-    /// charge), so the stored count is the whole story.
+    /// Mobile units the reference's `nMobile = num_H + (charge == -1)`.
+    /// Raw structures read the legacy riding-hydrogen model (the
+    /// stored count already carries the anion's proton); a fully
+    /// pinned structure — the (DE)PROTONATION-standardized state —
+    /// counts the deprotonated endpoint's charge instead.
     fn mobile(&self, atom: usize) -> u32 {
-        self.hydrogens[atom]
+        self.hydrogens[atom] + self.charge_units[atom]
     }
 
     /// The reference reads `bond_type & ~BOND_MARK_ALL`, and
