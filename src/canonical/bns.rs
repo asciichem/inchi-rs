@@ -216,6 +216,48 @@ impl Network {
         Network { verts, edges }
     }
 
+    /// The edge between two adjacent atoms, from the atom's adjacency.
+    pub(crate) fn edge_between(&self, a: usize, b: usize) -> Option<usize> {
+        self.verts[a]
+            .adj
+            .iter()
+            .copied()
+            .map(|edge| edge as usize)
+            .find(|&edge| self.other(edge, a) == b)
+    }
+
+    pub(crate) fn cur_flow(&self, edge: usize) -> i32 {
+        self.edges[edge].flow
+    }
+
+    pub(crate) fn edge_cap(&self, edge: usize) -> i32 {
+        self.edges[edge].cap.min(MAX_BOND_EDGE_CAP)
+    }
+
+    /// nMinFlow2Check: how far the edge's flow can fall — the flow
+    /// minus the smaller of the endpoints' residual capacity from
+    /// their OTHER edges, clamped at 0.
+    pub(crate) fn min_flow_2_check(&self, edge: usize) -> i32 {
+        let edge_rec = &self.edges[edge];
+        let f12 = edge_rec.flow;
+        if f12 <= 0 {
+            return 0;
+        }
+        let v1 = edge_rec.a as usize;
+        let v2 = edge_rec.b as usize;
+        let residual_around = |v: usize| -> i32 {
+            self.verts[v]
+                .adj
+                .iter()
+                .copied()
+                .map(|e| e as usize)
+                .filter(|&e| e != edge)
+                .map(|e| self.edges[e].cap - self.edges[e].flow)
+                .sum()
+        };
+        f12 - residual_around(v1).min(residual_around(v2)).min(f12)
+    }
+
     fn other(&self, edge: usize, of: usize) -> usize {
         let edge = &self.edges[edge];
         edge.a as usize ^ edge.b as usize ^ of
@@ -787,6 +829,62 @@ fn add_st_cap(net: &mut Network, v1: usize, skip: usize, ndots: &mut i32) {
         }
         net.edges[edge].cap = net.verts[other].st_cap.min(cap).min(MAX_BOND_EDGE_CAP);
     }
+}
+
+/// One BnsTestAndMarkAltBonds probe: pin the edge at `test_flow`,
+/// run the augmentation, and report feasibility (2*sum == dots, or
+/// the trivially-pinned dots==0) with the bonds whose flow moved.
+pub(crate) struct FlowProbe {
+    pub feasible: bool,
+    pub moved: Vec<(usize, usize)>,
+}
+
+pub(crate) fn probe_altern_flow(net: &Network, iedge: usize, test_flow: i32) -> FlowProbe {
+    let before: Vec<i32> = net.edges.iter().map(|edge| edge.flow).collect();
+    let mut work = net.clone();
+    let dots = match set_flow_to_check_one_bond(&mut work, iedge, test_flow) {
+        Some(dots) => dots,
+        None => {
+            return FlowProbe {
+                feasible: false,
+                moved: Vec::new(),
+            }
+        }
+    };
+    if dots == 0 {
+        return FlowProbe {
+            feasible: true,
+            moved: Vec::new(),
+        };
+    }
+    if dots < 0 {
+        return FlowProbe {
+            feasible: false,
+            moved: Vec::new(),
+        };
+    }
+    let mut sum = 0;
+    let mut feasible = false;
+    for _ in 0..MAX_PASSES {
+        let delta = balanced_network_search(&mut work);
+        if delta <= 0 {
+            feasible = delta == 0 && 2 * sum == dots;
+            break;
+        }
+        sum += delta;
+    }
+    let moved = if feasible {
+        (0..net.edges.len())
+            .filter(|&index| work.edges[index].flow != before[index])
+            .map(|index| {
+                let edge = &net.edges[index];
+                (edge.a.min(edge.b) as usize, edge.a.max(edge.b) as usize)
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    FlowProbe { feasible, moved }
 }
 
 /// The t-group or c-group edge of an atom: GetEdgeToGroupVertex

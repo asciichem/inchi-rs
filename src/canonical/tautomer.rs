@@ -761,6 +761,7 @@ fn build_links(context: &Context) -> Vec<BTreeSet<usize>> {
         c_charged: vec![false; n],
         altered: BTreeSet::new(),
     };
+    let mut alternated = alternation_round(context, &mut state);
     for _ in 0..8 {
         let mut changed = registration_round(context, &mut state);
         if !changed {
@@ -770,8 +771,12 @@ fn build_links(context: &Context) -> Vec<BTreeSet<usize>> {
             changed = charge_round(context, &mut state);
         }
         if !changed {
+            changed = alternation_round(context, &mut state);
+        }
+        if !changed && !alternated {
             break;
         }
+        alternated = false;
     }
     // Adjacency over co-membership (components() then yields the
     // groups; empty ones drop).
@@ -974,6 +979,99 @@ fn charge_round(context: &Context, state: &mut Registration) -> bool {
             }
         }
         i1 = i3;
+    }
+    changed
+}
+
+/// One BnsTestAndMarkAltBonds pass, the reference's initial bonds
+/// normalization: probe every allowed bond at its other achievable
+/// flows; when the balanced network can rebalance around the pinned
+/// alternative (2*sum == dots, or the trivial dots==0 pin), the bond
+/// and everything the probe moved read BOND_ALTERN from then on —
+/// wildcard in the pattern arithmetic, either-role in the anchor
+/// scan — while the valence arithmetic keeps the input orders.
+fn alternation_round(context: &Context, state: &mut Registration) -> bool {
+    let n = context.structure.atoms.len();
+    let single_like: Vec<Vec<bool>> = (0..n)
+        .map(|atom| {
+            context.neighbors[atom]
+                .iter()
+                .map(|&(neigh, _)| {
+                    matches!(
+                        context.bond_type(state, atom, neigh),
+                        BondType::Single | BondType::Altern | BondType::Tautom
+                    )
+                })
+                .collect()
+        })
+        .collect();
+    let bond_adjacency: Vec<Vec<(usize, i32, bool)>> = (0..n)
+        .map(|atom| {
+            context.neighbors[atom]
+                .iter()
+                .map(|&(neigh, kind)| {
+                    (
+                        neigh,
+                        match kind {
+                            2 => 1,
+                            3 => 2,
+                            _ => 0,
+                        },
+                        !context.allowed_edge(atom, neigh),
+                    )
+                })
+                .collect()
+        })
+        .collect();
+    let max_flow: Vec<i32> = (0..n).map(|atom| context.max_flow(atom)).collect();
+    let donor: Vec<bool> = (0..n)
+        .map(|atom| context.endpoint(state, atom) == Some(Role::Donor))
+        .collect();
+    let net = super::bns::Network::build(&super::bns::Build {
+        bond_adjacency: &bond_adjacency,
+        max_flow: &max_flow,
+        group_of: &state.group_of,
+        donor: &donor,
+        single_like: &single_like,
+        c_point_of: &state.c_point_of,
+        c_charged: &state.c_charged,
+    });
+    let mut changed = false;
+    for atom in 0..n {
+        for &(neigh, _) in &context.neighbors[atom] {
+            if neigh <= atom || !context.allowed_edge(atom, neigh) {
+                continue;
+            }
+            let &index = context.bond_index.get(&(atom, neigh)).expect("bonded pair");
+            if state.altered.contains(&index) {
+                continue;
+            }
+            let Some(iedge) = net.edge_between(atom, neigh) else {
+                continue;
+            };
+            let cur = net.cur_flow(iedge);
+            let cap = net.edge_cap(iedge);
+            let min = net.min_flow_2_check(iedge);
+            for test in min..=cap {
+                if test == cur {
+                    continue;
+                }
+                let probe = super::bns::probe_altern_flow(&net, iedge, test);
+                if std::env::var_os("INCHI_TRACE_BNS").is_some() {
+                    eprintln!("ALT {atom}-{neigh} cur={cur} test={test} min={min} cap={cap} -> feasible={} moved={:?}", probe.feasible, probe.moved);
+                }
+                if probe.feasible {
+                    state.altered.insert(index);
+                    for &(a, b) in &probe.moved {
+                        if let Some(&moved) = context.bond_index.get(&(a, b)) {
+                            state.altered.insert(moved);
+                        }
+                    }
+                    changed = true;
+                    break;
+                }
+            }
+        }
     }
     changed
 }
