@@ -160,6 +160,16 @@ pub fn proton_layer(structure: &Structure) -> Option<String> {
 /// The charge-layer value: the fixed charges the normalization did
 /// not move, in total.
 pub fn charge_layer(structure: &Structure) -> Option<String> {
+    // A fully pinned structure — the (DE)PROTONATION-standardized
+    // state — reads its fixed charge directly: the total minus the
+    // mobile charges that ride /h groups WITH real mobile hydrogen
+    // (a charge-only pair never formed a real t-group in the
+    // reference; its charges stay fixed).
+    if structure.atoms.iter().all(|atom| atom.h_pinned) {
+        let group_charge: i32 = crate::layers::hydrogen::mobile_charges(structure);
+        let q = structure.total_charge() - group_charge;
+        return (q != 0).then(|| format!("q{q:+}"));
+    }
     let q = charge_plan(structure).q;
     (q != 0).then(|| format!("q{q:+}"))
 }
@@ -167,6 +177,11 @@ pub fn charge_layer(structure: &Structure) -> Option<String> {
 /// The hydrogen adjustment the formula layer applies: an anion gains
 /// its mobile H, a proton-carrying cation loses one.
 pub fn hydrogen_adjustment(structure: &Structure) -> i32 {
+    // Pinned structures carry their final hydrogen counts; the
+    // legacy ±1 heuristics would double-apply.
+    if structure.atoms.iter().all(|atom| atom.h_pinned) {
+        return 0;
+    }
     let plan = charge_plan(structure);
     match (plan.p_cation, plan.p_anion) {
         (true, false) => -1,
