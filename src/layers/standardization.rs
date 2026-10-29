@@ -161,13 +161,11 @@ pub fn proton_layer(structure: &Structure) -> Option<String> {
 /// not move, in total.
 pub fn charge_layer(structure: &Structure) -> Option<String> {
     // A fully pinned structure — the (DE)PROTONATION-standardized
-    // state — reads its fixed charge directly: the total minus the
-    // mobile charges that ride /h groups WITH real mobile hydrogen
-    // (a charge-only pair never formed a real t-group in the
-    // reference; its charges stay fixed).
+    // state — reads its fixed charge directly: the skeleton's total.
+    // The /p layer carries the proton shift and net = q + p returns
+    // the submitted structure's charge.
     if structure.atoms.iter().all(|atom| atom.h_pinned) {
-        let group_charge: i32 = crate::layers::hydrogen::mobile_charges(structure);
-        let q = structure.total_charge() - group_charge;
+        let q = structure.total_charge();
         return (q != 0).then(|| format!("q{q:+}"));
     }
     let q = charge_plan(structure).q;
