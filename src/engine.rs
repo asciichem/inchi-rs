@@ -14,9 +14,9 @@ pub struct Engine {
 }
 
 impl Engine {
-    /// Parses the V2000 molfile subset, normalizes internal salts,
-    /// folds explicit hydrogen atoms onto their carriers, and equips
-    /// the default layer registry.
+    /// Parses the V2000 molfile subset, normalizes the bonded ion
+    /// pairs (terminal N⁺–O⁻), folds explicit hydrogen atoms onto
+    /// their carriers, and equips the default layer registry.
     pub fn from_molfile(input: &str) -> Result<Self> {
         let mut structure = molfile::parse(input)?;
         standardization::normalize_internal_salts(&mut structure);
@@ -33,6 +33,18 @@ impl Engine {
             }
             for (atom, charge) in structure.atoms.iter_mut().zip(&std.charge) {
                 atom.charge = *charge;
+            }
+            // The hard removal's π alternation: the bond orders the
+            // route moved ride with the proton (the reference keeps
+            // them — BNS_EF_SAVE_ALL), and the tautomer machinery
+            // reads the new orders from here on.
+            for (a, b, order) in &std.bonds {
+                for bond in structure.bonds.iter_mut() {
+                    let (from, to) = (bond.0, bond.1);
+                    if (from == *a && to == *b) || (from == *b && to == *a) {
+                        bond.2 = *order;
+                    }
+                }
             }
         }
         proton_shift += remove_group_protons(&mut structure);
@@ -170,7 +182,7 @@ fn remove_group_protons(structure: &mut Structure) -> i32 {
         let _ = plus;
         // The route: donor star vs acidic star over the whole
         // structure — no route, no removal.
-        let route = rem_proton_route_for(structure, &hydrogens, holder, acceptor);
+        let route = rem_proton_route_for(structure, holder, acceptor);
         if std::env::var_os("INCHI_TRACE_PROTON").is_some() {
             eprintln!("GROUP-REM plus={plus} holder={holder} acceptor={acceptor} route={route}");
         }
@@ -197,57 +209,10 @@ fn remove_group_protons(structure: &mut Structure) -> i32 {
 /// =O/N-O oxygens, both as the reference builds them for the hard
 /// removal (AR_HARD classes, neutral-valence gate, member-edge
 /// capacity raises).
-fn rem_proton_route_for(
-    structure: &Structure,
-    hydrogens: &[u32],
-    holder: usize,
-    acceptor: usize,
-) -> bool {
+fn rem_proton_route_for(structure: &Structure, holder: usize, acceptor: usize) -> bool {
     let context = crate::canonical::protons::ProtonContext::new(structure);
     let (donors, acids) = crate::canonical::protons::hard_removal_stars(&context);
-    let n = structure.atoms.len();
-    let mut bond_adjacency: Vec<Vec<(usize, i32, bool)>> = vec![Vec::new(); n];
-    let mut single_like: Vec<Vec<bool>> = vec![Vec::new(); n];
-    for &(from, to, kind) in &structure.bonds {
-        let flow = match kind {
-            2 => 1,
-            3 => 2,
-            _ => 0,
-        };
-        bond_adjacency[from].push((to, flow, false));
-        bond_adjacency[to].push((from, flow, false));
-        single_like[from].push(true);
-        single_like[to].push(true);
-    }
-    let max_flow: Vec<i32> = (0..n)
-        .map(|atom| (context.cbv2[atom] / 2 - context.neighbors[atom].len() as i32).max(0))
-        .collect();
-    let group_of: Vec<Option<usize>> = (0..n)
-        .map(|atom| {
-            if donors[atom] {
-                Some(0)
-            } else if acids[atom] {
-                Some(1)
-            } else {
-                None
-            }
-        })
-        .collect();
-    // A star member pushes only when it actually holds hydrogen (the
-    // reference's member-edge flow is the capped H count).
-    let donor: Vec<bool> = (0..n)
-        .map(|atom| donors[atom] && hydrogens[atom] > 0)
-        .collect();
-    let net = crate::canonical::bns::Network::build(&crate::canonical::bns::Build {
-        bond_adjacency: &bond_adjacency,
-        max_flow: &max_flow,
-        group_of: &group_of,
-        donor: &donor,
-        single_like: &single_like,
-        c_point_of: &[None; 0],
-        c_charged: &[false; 0],
-    });
-    crate::canonical::bns::rem_proton_route(&net, holder, acceptor)
+    crate::canonical::protons::rem_proton_route(&context, &donors, &acids, holder, acceptor).0
 }
 
 #[cfg(test)]

@@ -793,13 +793,19 @@ pub(crate) fn has_acidic_minus(context: &ProtonContext, atom: usize) -> bool {
 }
 
 /// The standardization result: adjusted H counts and charges per atom
-/// plus the net proton shift for the /p accounting.
+/// plus the net proton shift for the /p accounting. `bonds` carries
+/// the bond orders the HARD removal's π alternation moved (the
+/// reference's BNS ride shifts orders along the route — the acid's
+/// =O reads single and the donor-side π lands one bond over); empty
+/// when no hard pass fired.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct StandardizedProtons {
     pub h: Vec<u32>,
     pub charge: Vec<i32>,
     pub removed_protons: u32,
     pub added_protons: u32,
+    /// (a, b, new order) for the bonds whose order moved; `a < b`.
+    pub bonds: Vec<(usize, usize, u32)>,
 }
 
 /// RemoveNPProtonsAndAcidCharges (simple variants). Returns None when
@@ -820,6 +826,16 @@ pub fn standardize(structure: &Structure) -> Option<StandardizedProtons> {
         removed += simple_remove_hplus_npo(&mut context);
     }
 
+    // 5.1b: the hard removal from cationic N/P (the reference's
+    // HardRemoveHplusNP, bCancelChargesAlways=1): the +1 of an H-free
+    // N/P(+) cancels against a donor proton the REM_PROTON route
+    // reaches — the charge group star on the cation side, the donor
+    // star on the proton side. The charge-point ride-out is this
+    // phase's port: both end states read the charged atom neutral and
+    // the donor's proton gone. It runs BEFORE the 5.2 acid phase —
+    // the reference never re-runs it afterwards.
+    removed += charge_point_ride_out(&mut context) as u32;
+
     // 5.2a: acidic protons off neutral atoms (net +), protons onto
     // anions (net -)
     let after = totals(&context);
@@ -829,20 +845,42 @@ pub fn standardize(structure: &Structure) -> Option<StandardizedProtons> {
         added += simple_add_acidic_protons(&mut context, -after[attot::TOT_CHARGE]);
     }
 
-    // The charge-point ride-out: the +1 of a =N(+)= walks (the
-    // c-group pairing route) onto a same-type neutral H-donor point
-    // and rides out with one of its protons — both atoms end neutral,
-    // the proton moves to the /p account.
-    removed += charge_point_ride_out(&mut context) as u32;
+    // 5.2b: the HARD acidic removal (the reference's
+    // HardRemoveAcidicProtons under bTgFlagHardAddRenProtons) — when
+    // the simple masks cannot drain the positive total, a proton still
+    // leaves: it rides the skeleton from a donor-star member onto the
+    // acidic =O/N-O star member (the REM_PROTON route over the two
+    // virtual stars), where the driver's follow-up simple pass strips
+    // it as a charge. Net effect per move: the donor stays neutral,
+    // the acid carries the -1.
+    let after = totals(&context);
+    let mut moved_bonds = Vec::new();
+    if after[attot::TOT_CHARGE] > 0 {
+        let (moved, bonds) = hard_remove_acidic_protons(&mut context, after[attot::TOT_CHARGE]);
+        removed += moved;
+        moved_bonds = bonds;
+    }
 
     if removed == 0 && added == 0 {
-        return None;
+        // The (DE)PROTONATION ran on a charged structure and declined:
+        // the charged state IS the standardized state (the reference
+        // leaves e.g. an N-carried O(-) at its fixed charge — /q-1
+        // with no riding hydrogen). Returning Some pins the structure
+        // so the legacy ±1 heuristics never re-open the decision.
+        return Some(StandardizedProtons {
+            h: context.h,
+            charge: context.charge,
+            removed_protons: 0,
+            added_protons: 0,
+            bonds: Vec::new(),
+        });
     }
     Some(StandardizedProtons {
         h: context.h,
         charge: context.charge,
         removed_protons: removed,
         added_protons: added,
+        bonds: moved_bonds,
     })
 }
 
@@ -1012,6 +1050,131 @@ pub(crate) fn hard_removal_stars(context: &ProtonContext) -> (Vec<bool>, Vec<boo
         }
     }
     (donors, acids)
+}
+
+/// The REM_PROTON route test over a fresh network for this pass: one
+/// t-group star over the H-donor heteroatoms, one over the acidic
+/// =O/N-O oxygens, both as the reference builds them for the hard
+/// removal (AR_HARD classes, neutral-valence gate, member-edge
+/// capacity raises). The donor proton must ride the skeleton from its
+/// star onto the acidic star for the removal to be viable.
+pub(crate) fn rem_proton_route(
+    context: &ProtonContext,
+    donors: &[bool],
+    acids: &[bool],
+    holder: usize,
+    acceptor: usize,
+) -> (bool, Vec<(usize, usize, i32)>) {
+    let n = context.element.len();
+    let mut bond_adjacency: Vec<Vec<(usize, i32, bool)>> = vec![Vec::new(); n];
+    let mut single_like: Vec<Vec<bool>> = vec![Vec::new(); n];
+    for &(from, to, order2) in &context.bonds {
+        // The tautomer build's flow convention: order minus one
+        // (single 0, double 1, triple 2; aromatic reads single).
+        let flow = match order2 {
+            4 => 1,
+            6 => 2,
+            _ => 0,
+        };
+        bond_adjacency[from].push((to, flow, false));
+        bond_adjacency[to].push((from, flow, false));
+        single_like[from].push(true);
+        single_like[to].push(true);
+    }
+    let max_flow: Vec<i32> = (0..n)
+        .map(|atom| (context.cbv2[atom] / 2 - context.neighbors[atom].len() as i32).max(0))
+        .collect();
+    let group_of: Vec<Option<usize>> = (0..n)
+        .map(|atom| {
+            if donors[atom] {
+                Some(0)
+            } else if acids[atom] {
+                Some(1)
+            } else {
+                None
+            }
+        })
+        .collect();
+    // A star member pushes only when it actually holds hydrogen (the
+    // reference's member-edge flow is the capped H count).
+    let donor: Vec<bool> = (0..n)
+        .map(|atom| donors[atom] && context.h[atom] > 0)
+        .collect();
+    let net = crate::canonical::bns::Network::build(&crate::canonical::bns::Build {
+        bond_adjacency: &bond_adjacency,
+        max_flow: &max_flow,
+        group_of: &group_of,
+        donor: &donor,
+        single_like: &single_like,
+        c_point_of: &[None; 0],
+        c_charged: &[false; 0],
+    });
+    crate::canonical::bns::rem_proton_route_moved(&net, holder, acceptor)
+}
+
+/// The hard acidic-proton removal (TECHMAN 5.2b): up to `quota`
+/// protons ride from donor-star members onto acidic-star members —
+/// each move leaves the donor neutral and the acid carrying the -1
+/// (the driver's ride + follow-up simple strip, collapsed to its net
+/// state). The route's π alternation moves WITH the proton (the
+/// reference's BNS_EF_SAVE_ALL | BNS_EF_ALTR_NS ride): the reported
+/// atom-atom bonds change order by the signed delta, which both
+/// updates this context's valence arithmetic and returns to the
+/// caller so the structure can re-read the new orders. Every pass
+/// re-reads the stars: the previous move changed the H/charge/bond
+/// state the AR_HARD classification reads. Returns (moves, bonds).
+fn hard_remove_acidic_protons(
+    context: &mut ProtonContext,
+    quota: i64,
+) -> (u32, Vec<(usize, usize, u32)>) {
+    let mut moved = 0;
+    let mut all_moved: Vec<(usize, usize, u32)> = Vec::new();
+    while (moved as i64) < quota {
+        let (donors, acids) = hard_removal_stars(context);
+        let acid_sites: Vec<usize> = (0..acids.len()).filter(|&atom| acids[atom]).collect();
+        let mut found = None;
+        'pair: for holder in 0..context.h.len() {
+            if !donors[holder] || context.h[holder] == 0 {
+                continue;
+            }
+            for &acceptor in &acid_sites {
+                let (route, delta) = rem_proton_route(context, &donors, &acids, holder, acceptor);
+                if route {
+                    found = Some((holder, acceptor, delta));
+                    break 'pair;
+                }
+            }
+        }
+        let Some((holder, acceptor, route_bonds)) = found else {
+            break;
+        };
+        if std::env::var_os("INCHI_TRACE_PROTON").is_some() {
+            eprintln!(
+                "HARD-REM holder={holder} acceptor={acceptor} moved={moved} bonds={route_bonds:?}"
+            );
+        }
+        context.h[holder] -= 1;
+        context.charge[acceptor] -= 1;
+        // The π alternation rides with the proton: shift the orders of
+        // every atom-atom bond the search moved.
+        for (a, b, delta) in route_bonds {
+            let Some(entry) = context.bonds.iter_mut().find(|entry| {
+                let (from, to) = (entry.0, entry.1);
+                (from == a && to == b) || (from == b && to == a)
+            }) else {
+                continue;
+            };
+            let order2 = (entry.2 + 2 * delta).max(2);
+            entry.2 = order2;
+            let order = (order2 / 2) as u32;
+            all_moved.push((a, b, order));
+            // Keep the doubled valence sums the classifier reads.
+            context.cbv2[a] += 2 * delta;
+            context.cbv2[b] += 2 * delta;
+        }
+        moved += 1;
+    }
+    (moved, all_moved)
 }
 
 /// SimpleRemoveHplusNPO: every N/P-H(+) and OH(+) loses its proton.

@@ -6,9 +6,10 @@
 //! removable hydrogen or is a valence-deficient N/P center (an
 //! all-heavy onium keeps its charge in `/q`); an anionic O/S/Se/Te/N
 //! is proton-related only when it joins a mobile-H group (the parent
-//! stores the H in the group — a lone alkoxide keeps `/q-1`);
-//! opposite charges annihilate across a connected component (nitro,
-//! N-oxide, betaine, diazo) and vanish from every layer.
+//! stores the H in the group — a lone alkoxide keeps `/q-1`); only a
+//! BONDED opposite-charge pair annihilates (the terminal ion-pair
+//! preprocessing — nitro, N-oxide); a distant zwitterion pair keeps
+//! its charges and hides them in the identifier on its own.
 
 use crate::canonical::tautomer;
 use crate::error::{err, Result};
@@ -81,14 +82,19 @@ pub fn charge_plan(structure: &Structure) -> ChargePlan {
     plan
 }
 
-/// The reference's internal-salt annihilation: an anionic O/S/Se/Te
-/// cancels with a FIXED (proton-unrelated) cation anywhere in its
-/// connected component — nitro N⁺–O⁻ and N-oxide (bonded), betaine
-/// and acetylcarnitine's quaternary-N/carboxylate pairs (3-4 bonds).
-/// A proton-related cation never annihilates: glycine's NH3⁺/COO⁻
-/// pair stays, its charges netting in the proton balance. Runs before
-/// any layer, so the annihilated anion registers no riding hydrogen
-/// and no mobile group.
+/// The reference's terminal ion-pair handling (remove_ion_pairs /
+/// fix_odd_things preprocessing): an anionic O/S/Se/Te cancels with a
+/// FIXED (proton-unrelated) cation DIRECTLY BONDED to it — nitro
+/// N⁺–O⁻ and N-oxide (>N⁺–O⁻ ⇒ >N=O class). Distant zwitterion pairs
+/// (betaine's quaternary-N / carboxylate, 3+ bonds apart) SURVIVE the
+/// whole reference flow — BNS-ENTRY still reads both charges — and the
+/// identifier hides them on its own: the net charge is zero (/q
+/// omitted) and the charge-only t-group filters out of /h. Canceling
+/// a distant pair would erase the −1 the mobile-group machinery must
+/// fold into a super-group. A proton-related cation never
+/// annihilates: glycine's NH3⁺/COO⁻ pair stays, its charges netting
+/// in the proton balance. Runs before any layer, so an annihilated
+/// anion registers no riding hydrogen and no mobile group.
 pub fn normalize_internal_salts(structure: &mut Structure) {
     let mut neighbors: Vec<Vec<usize>> = vec![Vec::new(); structure.atoms.len()];
     for &(from, to, _) in &structure.bonds {
@@ -111,27 +117,12 @@ pub fn normalize_internal_salts(structure: &mut Structure) {
         if consumed[anion] {
             continue;
         }
-        // Component-wide walk from the anion: the first unconsumed
-        // fixed cation annihilates with it.
-        let mut visited = vec![false; structure.atoms.len()];
-        visited[anion] = true;
-        let mut queue = vec![anion];
-        let mut found = None;
-        while let Some(site) = queue.pop() {
-            let is_cation = structure.atoms[site].charge > 0
+        // The directly-bonded fixed cation — the terminal ion pair.
+        let found = neighbors[anion].iter().copied().find(|&site| {
+            structure.atoms[site].charge > 0
                 && !consumed[site]
-                && !cation_is_proton_related(&structure.atoms[site], degrees[site], sums[site]);
-            if is_cation {
-                found = Some(site);
-                break;
-            }
-            for &next in &neighbors[site] {
-                if !visited[next] {
-                    visited[next] = true;
-                    queue.push(next);
-                }
-            }
-        }
+                && !cation_is_proton_related(&structure.atoms[site], degrees[site], sums[site])
+        });
         if let Some(site) = found {
             // The reference never re-derives H after moving a charge:
             // the neutralized anion stays at its anionic reading
@@ -151,8 +142,15 @@ fn proton_deficient_pnicogen(atom: &AtomRecord, degree: u32, bond_sum: f64) -> b
 
 /// The proton-layer value for this structure: `Some("p±n")` when the
 /// standardization moved protons, `None` when the charge is part of
-/// the identity (quaternary N / lone alkoxide / carbanion).
+/// the identity (quaternary N / lone alkoxide / carbanion). A fully
+/// pinned structure never consults the ±1 heuristics: its verdict
+/// rode in through the (DE)PROTONATION shift — a pinned structure
+/// with a zero shift is the phase's DECLINED decision, and no /p
+/// segment may appear.
 pub fn proton_layer(structure: &Structure) -> Option<String> {
+    if structure.atoms.iter().all(|atom| atom.h_pinned) {
+        return None;
+    }
     let p = charge_plan(structure).p;
     (p != 0).then(|| format!("p{p:+}"))
 }
@@ -376,9 +374,12 @@ mod tests {
     }
 
     #[test]
-    fn betaine_annihilates() {
-        // C[N+](C)(C)CC(=O)[O-]: the quaternary N and the
-        // carboxylate O (three bonds apart) cancel — no layers.
+    fn distant_zwitterion_charges_survive() {
+        // C[N+](C)(C)CC(=O)[O-]: the reference keeps the pair's
+        // charges (BNS-ENTRY reads both — the oracle trace); only a
+        // BONDED ion pair cancels. The identifier hides them on its
+        // own: net zero (no /q) and the charge-only t-group filtered
+        // from /h once the structure pins.
         let mut s = structure(
             vec![
                 atom("N", 1, 0),
@@ -401,9 +402,8 @@ mod tests {
             ],
         );
         normalize_internal_salts(&mut s);
-        assert!(s.atoms.iter().all(|a| a.charge == 0));
-        assert_eq!(proton_layer(&s), None);
-        assert_eq!(charge_layer(&s), None);
+        assert_eq!(s.atoms[0].charge, 1, "the distant N+ survives");
+        assert_eq!(s.atoms[7].charge, -1, "the distant carboxylate survives");
     }
 
     #[test]
