@@ -27,6 +27,7 @@ impl Engine {
         let mut proton_shift = 0;
         if let Some(std) = crate::canonical::protons::standardize(&structure) {
             proton_shift = std.removed_protons as i32 - std.added_protons as i32;
+            structure.protons_hard_moved = std.hard_moved;
             for (atom, h) in structure.atoms.iter_mut().zip(&std.h) {
                 atom.h_count = *h;
                 atom.h_pinned = true;
@@ -47,7 +48,13 @@ impl Engine {
                 }
             }
         }
-        proton_shift += remove_group_protons(&mut structure);
+        let group_removals = remove_group_protons(&mut structure);
+        proton_shift += group_removals;
+        // The group-H removal is the 5.2b hard pass's group route; a
+        // successful removal sets the same normalization flag.
+        if group_removals > 0 {
+            structure.protons_hard_moved = true;
+        }
         Ok(Engine {
             structure,
             layers: default_layers(proton_shift),

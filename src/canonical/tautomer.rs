@@ -774,6 +774,9 @@ struct Registration {
     /// A salt registration succeeded (TG_FLAG_FOUND_SALT_CHARGES_DONE):
     /// later salt gates relax to donor-only.
     salt_charges_found: bool,
+    /// A HARD (DE)PROTONATION phase moved a proton (the structure's
+    /// FLAG_FORCE_SALT_TAUT): the salt gates relax to donor-only.
+    force_salt_taut: bool,
 }
 
 impl Registration {
@@ -839,6 +842,7 @@ fn fresh_state(n: usize) -> Registration {
         c_charged: vec![false; n],
         altered: BTreeSet::new(),
         salt_charges_found: false,
+        force_salt_taut: false,
     }
 }
 
@@ -855,6 +859,7 @@ fn build_links(context: &Context) -> Vec<BTreeSet<usize>> {
         c_charged: vec![false; n],
         altered: BTreeSet::new(),
         salt_charges_found: false,
+        force_salt_taut: context.structure.protons_hard_moved,
     };
     let mut alternated = alternation_round(context, &mut state);
     for pass in 0..8 {
@@ -1351,7 +1356,9 @@ fn salt_round(context: &Context, state: &mut Registration) -> bool {
         return false;
     }
     // CHARGED_SALTS_ONLY: without a negative-charge donor (and unless
-    // every candidate is a tautomeric endpoint) the round declines.
+    // every candidate is a tautomeric endpoint) the round declines —
+    // unless FLAG_FORCE_SALT_TAUT (a hard proton move happened), when
+    // any donor class suffices.
     let neg_present = subtype_all & SALT_DONOR_NEG != 0;
     let all_other = candidates
         .iter()
@@ -1359,7 +1366,11 @@ fn salt_round(context: &Context, state: &mut Registration) -> bool {
     if std::env::var_os("INCHI_TRACE_BNS").is_some() {
         eprintln!("SALT gate: subtype_all={subtype_all} neg={neg_present} all_other={all_other}");
     }
-    if !neg_present || all_other {
+    if state.force_salt_taut {
+        if subtype_all & (SALT_DONOR_NEG | SALT_DONOR_H) == 0 {
+            return false;
+        }
+    } else if !neg_present || all_other {
         return false;
     }
     let mut changed = false;
@@ -1446,10 +1457,21 @@ fn merge_salt_round(context: &Context, state: &mut Registration) -> bool {
         candidates.push(atom);
     }
 
+    if std::env::var_os("INCHI_TRACE_BNS").is_some() {
+        eprintln!(
+            "MERGE cands={candidates:?} suball={subtype_all} found={}",
+            state.salt_charges_found
+        );
+    }
+
     if candidates.len() <= 1 {
         return false;
     }
-    if state.salt_charges_found {
+    // The forced mode (ALLOW_NO_NEGTV_O, FOUND_SALT_CHARGES_DONE, or
+    // FLAG_FORCE_SALT_TAUT — a hard proton move happened) declines
+    // only when (a NEG2 and an H2 donor both miss) AND no t-group
+    // exists; the normal mode demands both donor classes.
+    if state.salt_charges_found || state.force_salt_taut {
         if (subtype_all & DONOR_NEG2 == 0 || subtype_all & DONOR_H2 == 0)
             && state.group_of.iter().flatten().next().is_none()
         {
@@ -1512,13 +1534,14 @@ fn salt2_round(context: &Context, state: &mut Registration) -> bool {
         candidates.push((atom, kind, subtype));
     }
     // The gate: acceptor present, and a donor unless everything is
-    // other-type; FOUND_SALT_CHARGES_DONE relaxes to donor-only.
+    // other-type; FOUND_SALT_CHARGES_DONE or FLAG_FORCE_SALT_TAUT
+    // relaxes to donor-only.
     let donor_all = SALT_DONOR_NEG | SALT_DONOR_H;
+    let forced = state.salt_charges_found || state.force_salt_taut;
     if candidates.len() <= 1
         || subtype_all & SALT_ACCEPTOR == 0
-        || (state.salt_charges_found && subtype_all & donor_all == 0)
-        || (!state.salt_charges_found
-            && (subtype_all & SALT_DONOR_NEG == 0 || other_count == candidates.len()))
+        || (forced && subtype_all & donor_all == 0)
+        || (!forced && (subtype_all & SALT_DONOR_NEG == 0 || other_count == candidates.len()))
     {
         return false;
     }
@@ -2377,12 +2400,13 @@ fn check_tropolone(
     let Some(eif2) = context.endpoint(state, endpoint2) else {
         return false;
     };
-    // Chain: endpoint2's bond, the Q-R bond, the ring bonds (no
-    // closure), endpoint1's bond.
+    // Chain: endpoint2's bond, the ring arc (the walk bonds from i2
+    // around to the closure INTO i1 — the seed Q-R bond EXCLUDED, the
+    // reference's DfsPath[1..=nLenDfsPath]), endpoint1's bond. The
+    // caller already vetted the Q-R bond as single/tautom/altern.
     let mut chain: Vec<BondType> = Vec::with_capacity(bonds.len() + 1);
     chain.push(context.bond_type(state, i2, endpoint2));
-    chain.push(bonds[0]);
-    chain.extend_from_slice(&bonds[1..bonds.len() - 1]);
+    chain.extend_from_slice(&bonds[1..]);
     chain.push(context.bond_type(state, i1, endpoint1));
     let Some(last) = are_alt_bonds(&chain) else {
         return false;
@@ -2412,11 +2436,12 @@ fn check_tropolone(
             added = true;
         }
     }
-    let mut chain_bonds: Vec<(usize, usize)> =
-        vec![(i2, endpoint2), (i2, path[1]), (i1, endpoint1)];
+    let mut chain_bonds: Vec<(usize, usize)> = vec![(i2, endpoint2)];
     for index in 1..bonds.len() - 1 {
-        chain_bonds.insert(2 + index - 1, (path[index + 1], path[index]));
+        chain_bonds.push((path[index], path[index + 1]));
     }
+    chain_bonds.push((path[bonds.len() - 1], path[0]));
+    chain_bonds.push((i1, endpoint1));
     for ((center, other), kind) in chain_bonds.into_iter().zip(&chain) {
         if !matches!(kind, BondType::Single | BondType::Double | BondType::Altern) {
             continue;

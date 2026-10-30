@@ -294,6 +294,7 @@ mod tests {
             },
             positions,
             isotopic_h: Default::default(),
+            protons_hard_moved: false,
         }
     }
 

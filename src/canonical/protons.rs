@@ -806,6 +806,12 @@ pub struct StandardizedProtons {
     pub added_protons: u32,
     /// (a, b, new order) for the bonds whose order moved; `a < b`.
     pub bonds: Vec<(usize, usize, u32)>,
+    /// A HARD (DE)PROTONATION phase moved a proton (the 5.1b
+    /// charge-point ride-out or the 5.2b acidic hard removal) — the
+    /// reference's FLAG_PROTON_NP_HARD_REMOVED / AC_HARD_* bits,
+    /// whose disjunction is FLAG_FORCE_SALT_TAUT: the salt t-group
+    /// machinery's later gates relax to donor-only.
+    pub hard_moved: bool,
 }
 
 /// RemoveNPProtonsAndAcidCharges (simple variants). Returns None when
@@ -820,6 +826,7 @@ pub fn standardize(structure: &Structure) -> Option<StandardizedProtons> {
 
     let mut removed = 0u32;
     let mut added = 0u32;
+    let mut hard_moved = false;
 
     // 5.1a: protons off charged N,P and OH(+)
     if initial[attot::NP_PROTON] + initial[attot::OH_PLUS] > 0 {
@@ -834,7 +841,9 @@ pub fn standardize(structure: &Structure) -> Option<StandardizedProtons> {
     // phase's port: both end states read the charged atom neutral and
     // the donor's proton gone. It runs BEFORE the 5.2 acid phase —
     // the reference never re-runs it afterwards.
-    removed += charge_point_ride_out(&mut context) as u32;
+    let rode_out = charge_point_ride_out(&mut context);
+    removed += rode_out as u32;
+    hard_moved |= rode_out > 0;
 
     // 5.2a: acidic protons off neutral atoms (net +), protons onto
     // anions (net -)
@@ -859,6 +868,7 @@ pub fn standardize(structure: &Structure) -> Option<StandardizedProtons> {
         let (moved, bonds) = hard_remove_acidic_protons(&mut context, after[attot::TOT_CHARGE]);
         removed += moved;
         moved_bonds = bonds;
+        hard_moved |= moved > 0;
     }
 
     if removed == 0 && added == 0 {
@@ -873,6 +883,7 @@ pub fn standardize(structure: &Structure) -> Option<StandardizedProtons> {
             removed_protons: 0,
             added_protons: 0,
             bonds: Vec::new(),
+            hard_moved: false,
         });
     }
     Some(StandardizedProtons {
@@ -881,6 +892,7 @@ pub fn standardize(structure: &Structure) -> Option<StandardizedProtons> {
         removed_protons: removed,
         added_protons: added,
         bonds: moved_bonds,
+        hard_moved,
     })
 }
 
@@ -1321,6 +1333,7 @@ mod tests {
             stereo_bonds: Default::default(),
             positions: Default::default(),
             isotopic_h: Default::default(),
+            protons_hard_moved: false,
         }
     }
 
