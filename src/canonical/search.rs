@@ -1,34 +1,181 @@
-//! The canonicalization search, mirroring the reference's two-stage
-//! base flow.
+//! The canonicalization search, mirroring the reference's base flow
+//! (ichican2.c `GetBaseCanonRanking` + `CanonGraph`).
 //!
 //! Stage 1 is hydrogen-blind: invariants, equitable refinement,
-//! individualization, and the greatest connection table wins; every
-//! table-equal terminal is an automorphic image of the first, and the
-//! position-wise mappings merge into orbits. The orbit-minimal base
-//! ranks become the first field of the stage-2 auxiliary ranks.
+//! individualization, and the smallest connection table wins
+//! (`CtFullCompare` under `INCHI_CANON_MIN`). Every table-equal
+//! terminal is an automorphic image of the first, and the position-wise
+//! mappings merge into orbits; each orbit's minimal canonical rank is
+//! its symmetry class. That partition is then rebuilt from the classes
+//! and searched again when the rebuild changed anything — the
+//! reference's `FixCanonEquivalenceInfo` + second `CanonGraph` call,
+//! which is what makes the result independent of the input atom order.
 //!
-//! Stage 2 rebuilds the initial partition from (base symmetry rank,
-//! hydrogen count), refines it equitably, orders candidates within
-//! cells by their auxiliary rank — the reference's `CellGetMinNode`
-//! with `nAuxRank` — and keeps the greatest (table, hydrogens) terminal.
-//! This stage is where hydrogen counts legitimately settle what pure
-//! connectivity cannot.
+//! Stage 2 (the reference's `CanonGraph03`) is the hydrogen-aware pass,
+//! grown from the partition `FixCanonEquivalenceInfo` left behind: the
+//! auxiliary `(symmetry, encoded H)` refinement orders candidates
+//! within cells (its `CellGetMinNode` with `nAuxRank`), and the
+//! terminal compare adds the encoded hydrogen layer after the
+//! connection table. It runs only when some symmetry class holds
+//! different hydrogen counts, or when a mobile group needs the t-group
+//! rows; otherwise the H-free numbering already is canonical and the
+//! reference copies it verbatim.
 
 use super::partition::Partition;
 use super::table::ConnectionTable;
 
-/// Orbit-minimal base ranks per atom: atoms the stage-1 search proved
-/// automorphic share their smallest canonical rank — the symmetry
-/// classes the stereo layer reads orbits from.
-pub fn base_symmetry(adjacency: &[Vec<usize>], invariants: &[(u16, u16)]) -> Vec<u32> {
-    let n = adjacency.len();
-    let base = search_stage_one(adjacency, invariants);
-    let mut symmetry: Vec<u32> = (0..n).map(|atom| base.partition.rank_of(atom)).collect();
-    for atom in 0..n {
-        let representative = base.orbits.representative(atom);
-        symmetry[atom] = symmetry[representative].min(symmetry[atom]);
+/// The reference's `numHNoTautH` encoding (`BASE_H_NUMBER` /
+/// `EMPTY_H_NUMBER`, ichican2.c): a real count is
+/// `count + BASE_H_NUMBER`, and an atom with no attached hydrogen is
+/// `EMPTY_H_NUMBER`, which is LARGER than every real count. The
+/// terminal compare minimizes the encoded vector, so a zero-H atom
+/// sorts after every hydrogen-bearing atom — the opposite of comparing
+/// raw counts, and the reason the canonical numbering drives the
+/// unsaturation last.
+const BASE_H_NUMBER: u32 = 16_383;
+const EMPTY_H_NUMBER: u32 = 32_766;
+
+fn encoded_hydrogen(hydrogens: u32) -> u32 {
+    if hydrogens == 0 {
+        EMPTY_H_NUMBER
+    } else {
+        hydrogens + BASE_H_NUMBER
     }
-    symmetry
+}
+
+/// Development tracing, enabled with `INCHI_TRACE_CANON=1`. The output
+/// mirrors the reference's `PartitionColorVertex` / L-loop dumps so the
+/// two search trees can be diffed level by level.
+fn tracing() -> bool {
+    static TRACING: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *TRACING.get_or_init(|| std::env::var_os("INCHI_TRACE_CANON").is_some())
+}
+
+fn trace_partition(tag: &str, partition: &Partition) {
+    if !tracing() {
+        return;
+    }
+    let n = partition.ranks().len();
+    let mut line = String::new();
+    line.push_str(tag);
+    line.push_str(" rank=");
+    for atom in 0..n {
+        line.push_str(&format!("{},", partition.rank_of(atom)));
+    }
+    line.push_str(" atnum=");
+    for &atom in partition.at_number() {
+        line.push_str(&format!("{},", atom + 1));
+    }
+    eprintln!("{line}");
+}
+
+/// The H-free canonical search plus the reference's fix-and-rerun: the
+/// winning numbering's orbit minima become symmetry classes; those
+/// classes build a fresh seed partition; the search runs again from it
+/// whenever the rebuild changed the partition (`bChangeCurrRank`) or
+/// the stored class minima were not the contiguous class ranks
+/// (`bChangeSymmRank`). The reference does not iterate this fix; one
+/// rerun is all `FixCanonEquivalenceInfo` triggers.
+///
+/// `h_seed` is the class partition as `FixCanonEquivalenceInfo` leaves
+/// it — built from the FIRST pass's orbit minima. The reference hands
+/// exactly that partition (never the rerun's own numbering) to the
+/// hydrogen-aware `CanonGraph03`, while the rerun's numbering supplies
+/// the symmetry minima the aux ranks are built from.
+struct HfreeCanon {
+    final_search: StageOne,
+    h_seed: Partition,
+}
+
+fn hfree_canonical(adjacency: &[Vec<usize>], invariants: &[(u16, u16)]) -> HfreeCanon {
+    let mut initial = Partition::initial(invariants);
+    initial.refine(adjacency);
+    let first = search_stage_one(adjacency, &initial, "S1 enter pi0");
+    let first_symmetry = orbit_min_symmetry(&first);
+    let h_seed = class_partition(&first_symmetry);
+    // `bChangeCurrRank` compares the rebuilt class ranks against the
+    // ORIGINAL seed's ranks (the reference never re-runs the fix, so
+    // the comparison baseline stays the first equitable partition).
+    let ranks_changed = h_seed.ranks() != initial.ranks();
+    let final_search = if ranks_changed || !class_ranks_are_contiguous(&first_symmetry) {
+        search_stage_one(adjacency, &h_seed, "S1 rerun pi0")
+    } else {
+        first
+    };
+    HfreeCanon {
+        final_search,
+        h_seed,
+    }
+}
+
+/// Orbit-minimal canonical rank per atom — the reference's
+/// `nSymmRank`: for every orbit, the smallest winning rank among its
+/// members, shared by the whole orbit.
+fn orbit_min_symmetry(base: &StageOne) -> Vec<u32> {
+    let n = base.partition.ranks().len();
+    let mut min_by_root = vec![u32::MAX; n];
+    for atom in 0..n {
+        let root = base.orbits.representative(atom);
+        min_by_root[root] = min_by_root[root].min(base.partition.rank_of(atom));
+    }
+    (0..n)
+        .map(|atom| min_by_root[base.orbits.representative(atom)])
+        .collect()
+}
+
+/// The seed partition rebuilt from symmetry classes
+/// (`SortedEquInfoToRanks`): classes ordered by their minimal rank,
+/// atoms within a class by atom number, ranks the cell-end positions.
+fn class_partition(symmetry: &[u32]) -> Partition {
+    let invariants: Vec<(u32, u32)> = symmetry.iter().map(|&value| (value, 0)).collect();
+    Partition::initial_pair(&invariants)
+}
+
+/// `FixCanonEquivalenceInfo`'s `bChangeSymmRank`: true when a class's
+/// stored minimum is not the rank its class has in the rebuilt
+/// partition (class starting at position `i` must carry minimum `i+1`).
+fn class_ranks_are_contiguous(symmetry: &[u32]) -> bool {
+    let mut classes: Vec<(u32, usize)> = symmetry
+        .iter()
+        .enumerate()
+        .map(|(atom, &value)| (value, atom))
+        .collect();
+    classes.sort_unstable();
+    let mut start = 0usize;
+    let mut index = 0usize;
+    while index < classes.len() {
+        let value = classes[index].0;
+        if value as usize != start + 1 {
+            return false;
+        }
+        while index < classes.len() && classes[index].0 == value {
+            index += 1;
+        }
+        start = index;
+    }
+    true
+}
+
+/// True when every symmetry class carries one hydrogen count. The
+/// reference skips the hydrogen-aware canonicalization in that case:
+/// no class can split on hydrogen, so the H-free numbering stands.
+fn hydrogens_uniform(symmetry: &[u32], hydrogens: &[u32]) -> bool {
+    let mut classes: Vec<(u32, u32)> = symmetry
+        .iter()
+        .zip(hydrogens)
+        .map(|(&class, &count)| (class, count))
+        .collect();
+    classes.sort_unstable();
+    classes
+        .windows(2)
+        .all(|pair| pair[0].0 != pair[1].0 || pair[0].1 == pair[1].1)
+}
+
+/// Symmetry classes per atom: the orbit-minimal base ranks the stereo
+/// layer reads orbits from, after the reference's rebuild-and-rerun.
+pub fn base_symmetry(adjacency: &[Vec<usize>], invariants: &[(u16, u16)]) -> Vec<u32> {
+    let hfree = hfree_canonical(adjacency, invariants);
+    orbit_min_symmetry(&hfree.final_search)
 }
 
 /// Final canonical rank (1-based) per atom. The mobile groups (rank
@@ -42,30 +189,51 @@ pub fn canonical_ranks(
     groups: &[(u32, Vec<usize>)],
 ) -> Vec<u32> {
     let n = adjacency.len();
-    let symmetry = base_symmetry(adjacency, invariants);
-    // Stage-2 auxiliary partition: (symmetry rank, hydrogen count),
-    // then equitable refinement — the reference's nRankAux.
+    let hfree = hfree_canonical(adjacency, invariants);
+    let symmetry = orbit_min_symmetry(&hfree.final_search);
+    // No class splits on hydrogen and no mobile group needs the t-group
+    // rows: the H-free numbering is the final answer, exactly the
+    // reference's copy of nCanonRankNoTautH.
+    if groups.is_empty() && hydrogens_uniform(&symmetry, hydrogens) {
+        return (0..n)
+            .map(|atom| hfree.final_search.partition.rank_of(atom))
+            .collect();
+    }
+    // Stage-2 auxiliary partition: (symmetry rank, encoded hydrogen
+    // count), then equitable refinement — the reference's nRankAux.
     let aux_invariants: Vec<(u32, u32)> = (0..n)
-        .map(|atom| (symmetry[atom], hydrogens[atom]))
+        .map(|atom| (symmetry[atom], encoded_hydrogen(hydrogens[atom])))
         .collect();
     let mut aux = Partition::initial_pair(&aux_invariants);
     aux.refine(adjacency);
     let aux_rank: Vec<u32> = (0..n).map(|atom| aux.rank_of(atom)).collect();
 
-    // THE SEARCH TREE GROWS FROM THE H-FREE (ELEMENT, DEGREE)
-    // PARTITION — the reference's pi[0] (its bHydrogensInRanks=0
-    // seed block). The (symmetry, H) aux partition only orders the
-    // candidates; seeding from it would fence a CH and a CH2 that
-    // the reference's tree individualizes across.
-    let mut base = Partition::initial_pair(
-        &invariants
-            .iter()
-            .map(|(element, degree)| (*element as u32, *degree as u32))
-            .collect::<Vec<_>>(),
-    );
-    base.refine(adjacency);
+    // THE SEARCH TREE GROWS FROM THE FIX PARTITION — the reference's
+    // pi[0] handed to CanonGraph03, i.e. the classes built from the
+    // FIRST H-free pass (the rerun, when it happens, never replaces
+    // them). The (symmetry, H) aux partition only orders the
+    // candidates; the classes themselves bound the tree.
+    let base = &hfree.h_seed;
 
-    let informed = search_stage_two(adjacency, &base, &aux_rank, hydrogens, groups);
+    if tracing() {
+        let mut line = String::from("S2 symmetry rank=");
+        for &value in &symmetry {
+            line.push_str(&format!("{value},"));
+        }
+        line.push_str(" aux=");
+        for &value in &aux_rank {
+            line.push_str(&format!("{value},"));
+        }
+        eprintln!("{line}");
+        trace_partition("S2 enter pi0", base);
+        let mut line = String::from("S2 hydrogens=");
+        for &value in hydrogens {
+            line.push_str(&format!("{value},"));
+        }
+        eprintln!("{line}");
+    }
+
+    let informed = search_stage_two(adjacency, base, &aux_rank, hydrogens, groups);
     (0..n).map(|atom| informed.rank_of(atom)).collect()
 }
 
@@ -114,16 +282,15 @@ struct StageOne {
     orbits: Orbits,
 }
 
-fn search_stage_one(adjacency: &[Vec<usize>], invariants: &[(u16, u16)]) -> StageOne {
+fn search_stage_one(adjacency: &[Vec<usize>], root: &Partition, trace_tag: &str) -> StageOne {
     let n = adjacency.len();
-    let mut root = Partition::initial(invariants);
-    root.refine(adjacency);
+    trace_partition(trace_tag, root);
     let mut state = StageOneState {
         first: None,
         best: None,
         orbits: Orbits::new(n),
     };
-    descend_hfree(&root, adjacency, &mut state);
+    descend_hfree(root, adjacency, &mut state);
     StageOne {
         partition: state.best.expect("a discrete partition is always reached"),
         orbits: state.orbits,
@@ -150,8 +317,19 @@ fn descend_hfree(partition: &Partition, adjacency: &[Vec<usize>], state: &mut St
                             .union(first.at_number()[position], partition.at_number()[position]);
                     }
                 }
+                if tracing() {
+                    eprintln!(
+                        "S1 terminal ct={:?} equal_first={}",
+                        table.entries(),
+                        table.entries()
+                            == ConnectionTable::build(first.ranks(), adjacency).entries()
+                    );
+                }
             } else {
                 state.first = Some(partition.clone());
+                if tracing() {
+                    eprintln!("S1 terminal ct={:?} FIRST", table.entries());
+                }
             }
             let better = match &state.best {
                 None => true,
@@ -165,10 +343,23 @@ fn descend_hfree(partition: &Partition, adjacency: &[Vec<usize>], state: &mut St
             }
         }
         Some((start, end)) => {
-            for position in start..end {
-                let v = partition.at_number()[position];
+            if tracing() {
+                eprintln!("S1 cell=[{start},{end})");
+            }
+            // The H-free pass has no auxiliary rank, and the
+            // reference's CellGetMinNode then walks the cell by
+            // increasing ATOM NUMBER, not by the partition's
+            // within-cell order. The order decides which of several
+            // table-equal maxima is the winner, and with it the rank
+            // values of the symmetry classes.
+            let mut candidates: Vec<usize> = partition.at_number()[start..end].to_vec();
+            candidates.sort_unstable();
+            for v in candidates {
                 let mut branch = partition.clone();
                 branch.individualize(adjacency, v);
+                if tracing() {
+                    trace_partition(&format!("S1 indiv v={}", v + 1), &branch);
+                }
                 descend_hfree(&branch, adjacency, state);
             }
         }
@@ -238,7 +429,7 @@ fn descend_hinformed(
             }
             let counts = |p: &Partition| -> Vec<u32> {
                 (0..adjacency.len())
-                    .map(|atom| hydrogens[p.at_number()[atom]])
+                    .map(|atom| encoded_hydrogen(hydrogens[p.at_number()[atom]]))
                     .collect()
             };
             // The t-group CT rows: (count, ascending member ranks)
@@ -265,8 +456,11 @@ fn descend_hinformed(
                         std::cmp::Ordering::Equal => {
                             match counts(partition).cmp(&counts(best_partition)) {
                                 // The M3 corpus decode: at table-equal
-                                // terminals the SMALLER per-rank
-                                // hydrogen vector wins.
+                                // terminals the SMALLER encoded
+                                // hydrogen vector wins. The encoding
+                                // is what places the zero-H atoms
+                                // last; on raw counts the winner
+                                // would invert (see `encoded_hydrogen`).
                                 std::cmp::Ordering::Less => true,
                                 std::cmp::Ordering::Greater => false,
                                 std::cmp::Ordering::Equal => rows(partition) > rows(best_partition),
@@ -277,10 +471,26 @@ fn descend_hinformed(
             };
             if better {
                 *best = Some(partition.clone());
+                if tracing() {
+                    eprintln!(
+                        "S2 terminal BETTER ct={:?} hydrogens={:?}",
+                        table.entries(),
+                        counts(partition)
+                    );
+                }
+            } else if tracing() {
+                eprintln!(
+                    "S2 terminal keep ct={:?} hydrogens={:?}",
+                    table.entries(),
+                    counts(partition)
+                );
             }
             return;
         }
     };
+    if tracing() {
+        eprintln!("S2 cell=[{},{}] arms", cell.0, cell.1);
+    }
     // Candidates within the cell ordered by auxiliary rank, then atom
     // number — the reference's aux-informed CellGetMinNode — skipping
     // candidates an automorphism already relates to a tried one.
@@ -288,10 +498,16 @@ fn descend_hinformed(
     candidates.sort_by_key(|&atom| (aux_rank[atom], atom));
     for &v in &candidates {
         if orbits.representative(v) != v {
+            if tracing() {
+                eprintln!("S2 skip v={} (orbit)", v + 1);
+            }
             continue;
         }
         let mut branch = partition.clone();
         branch.individualize(adjacency, v);
+        if tracing() {
+            trace_partition(&format!("S2 indiv v={}", v + 1), &branch);
+        }
         descend_hinformed(
             &branch, adjacency, aux_rank, hydrogens, groups, first, best, orbits,
         );
@@ -372,5 +588,36 @@ mod tests {
         let mut ranks = run(&["C"; 6], &bonds, &[1; 6]);
         ranks.sort_unstable();
         assert_eq!(ranks, vec![1, 2, 3, 4, 5, 6]);
+    }
+
+    #[test]
+    fn zero_hydrogen_atoms_number_after_hydrogenated_ones() {
+        // Cyclopropanone carrying an OH on each remaining carbon. The
+        // heavy skeleton is symmetric (every ring carbon bears one
+        // oxygen), so the H-free search cannot separate the ketone
+        // carbon and its oxygen from the CHOH/OH atoms; only the
+        // encoded hydrogen layer can. `EMPTY_H_NUMBER` sorts above
+        // every real count and the compare minimizes, so the two
+        // zero-H atoms land after the four hydrogen-bearing ones. On
+        // raw counts the polarity inverts and the ketone atoms take
+        // the lowest numbers — the breadth-39 failure shape.
+        let ranks = run(
+            &["C", "C", "C", "O", "O", "O"],
+            &[(0, 1), (1, 2), (2, 0), (0, 3), (1, 4), (2, 5)],
+            &[0, 1, 1, 0, 1, 1],
+        );
+        // The invariant cells separate the carbons from the oxygens
+        // (the C block is numbered first), so the encoded-hydrogen
+        // preference shows within each block: the ketone carbon after
+        // both CHOH carbons, the ketone oxygen after both OH oxygens.
+        assert!(ranks[0] > ranks[1] && ranks[0] > ranks[2], "{ranks:?}");
+        assert!(ranks[3] > ranks[4] && ranks[3] > ranks[5], "{ranks:?}");
+        assert_eq!(ranks, vec![3, 1, 2, 6, 4, 5]);
+    }
+
+    #[test]
+    fn encoded_hydrogen_puts_the_empty_count_last() {
+        assert!(encoded_hydrogen(0) > encoded_hydrogen(3));
+        assert!(encoded_hydrogen(3) > encoded_hydrogen(1));
     }
 }
