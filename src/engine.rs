@@ -114,12 +114,10 @@ impl Engine {
 fn remove_group_protons(structure: &mut Structure) -> i32 {
     let mut removals = 0;
     loop {
-        // The quota: the M1 layers own |charge| <= 1, so the removal
-        // fires exactly on a +1 structure and neutralizes it — the
-        // +2 family needs the reference's charged mobile-group merge
-        // (the super-t-group machinery), still pending.
+        // The quota: one removal per unit of positive charge. The +2
+        // family lands when the charged super-group merge follows.
         let total = structure.total_charge() + removals;
-        if total != 1 {
+        if total <= 0 {
             break;
         }
         // The fixed cation the shift leaves behind: an N/P(+) with no
