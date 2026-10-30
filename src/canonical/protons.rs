@@ -458,8 +458,11 @@ fn el_valences(el: i32, charge: i32) -> [u8; 5] {
 /// the arithmetic integral.
 pub(crate) struct ProtonContext {
     pub(crate) element: Vec<i32>,
-    neighbors: Vec<Vec<usize>>,
-    cbv2: Vec<i32>,
+    pub(crate) neighbors: Vec<Vec<usize>>,
+    pub(crate) cbv2: Vec<i32>,
+    /// The bond list (from, to, doubled order) the pairing network
+    /// reads.
+    pub(crate) bonds: Vec<(usize, usize, i32)>,
     pub(crate) h: Vec<u32>,
     pub(crate) charge: Vec<i32>,
 }
@@ -484,6 +487,11 @@ impl ProtonContext {
                 .collect(),
             neighbors,
             cbv2,
+            bonds: structure
+                .bonds
+                .iter()
+                .map(|&(from, to, order)| (from, to, if order == 4 { 3 } else { 2 * order as i32 }))
+                .collect(),
             h: structure.hydrogens(),
             charge: structure.atoms.iter().map(|atom| atom.charge).collect(),
         }
@@ -821,6 +829,12 @@ pub fn standardize(structure: &Structure) -> Option<StandardizedProtons> {
         added += simple_add_acidic_protons(&mut context, -after[attot::TOT_CHARGE]);
     }
 
+    // The charge-point ride-out: the +1 of a =N(+)= walks (the
+    // c-group pairing route) onto a same-type neutral H-donor point
+    // and rides out with one of its protons — both atoms end neutral,
+    // the proton moves to the /p account.
+    removed += charge_point_ride_out(&mut context) as u32;
+
     if removed == 0 && added == 0 {
         return None;
     }
@@ -830,6 +844,99 @@ pub fn standardize(structure: &Structure) -> Option<StandardizedProtons> {
         removed_protons: removed,
         added_protons: added,
     })
+}
+
+/// GetChargeType / bCanBeACPoint: the charge-point classes the
+/// pairing reads (N: charge 1, neutral bonds 3, neutral valence 3).
+fn charge_point_class(context: &ProtonContext, atom: usize) -> Option<bool> {
+    if !matches!(context.element[atom], 7 | 15) {
+        return None;
+    }
+    match context.charge[atom] {
+        1 => Some(true),
+        0 => {
+            let bonds_valence = context.cbv2[atom] / 2 + context.h[atom] as i32;
+            let num_bonds = context.valence(atom) as i32 + context.h[atom] as i32;
+            // C_SUBTYPE_NEUTRAL_H_DONOR only: valence under the
+            // neutral valence WITH hydrogens — a tertiary all-single
+            // N is NEUTRAL_NON_TAUT (no proton to shed).
+            if bonds_valence == 3
+                && num_bonds == 3
+                && context.valence(atom) < 3
+                && context.h[atom] > 0
+            {
+                Some(false)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Pair each charged point with a neutral H-donor point the charge
+/// can walk to (the CHARGE alt path over a c-group star) and ride the
+/// +1 out on the donor's proton.
+fn charge_point_ride_out(context: &mut ProtonContext) -> i32 {
+    let n = context.element.len();
+    let mut removed = 0;
+    while let Some(charged) =
+        (0..n).find(|&atom| charge_point_class(context, atom) == Some(true) && context.h[atom] == 0)
+    {
+        let mut paired = false;
+        for neutral in 0..n {
+            if neutral == charged || charge_point_class(context, neutral) != Some(false) {
+                continue;
+            }
+            let mut c_point_of: Vec<Option<usize>> = vec![None; n];
+            c_point_of[charged] = Some(0);
+            c_point_of[neutral] = Some(0);
+            let mut c_charged = vec![false; n];
+            c_charged[charged] = true;
+            let mut bond_adjacency: Vec<Vec<(usize, i32, bool)>> = vec![Vec::new(); n];
+            let mut single_like: Vec<Vec<bool>> = vec![Vec::new(); n];
+            for &(from, to, order2) in &context.bonds {
+                // The tautomer build's flow convention: order minus
+                // one (single 0, double 1, triple 2; aromatic 1).
+                let flow = match order2 {
+                    2 => 0,
+                    6 => 2,
+                    _ => 1,
+                };
+                bond_adjacency[from].push((to, flow, false));
+                bond_adjacency[to].push((from, flow, false));
+                single_like[from].push(true);
+                single_like[to].push(true);
+            }
+            let max_flow: Vec<i32> = (0..n)
+                .map(|atom| (context.cbv2[atom] / 2 - context.valence(atom) as i32).max(0))
+                .collect();
+            let net = crate::canonical::bns::Network::build(&crate::canonical::bns::Build {
+                bond_adjacency: &bond_adjacency,
+                max_flow: &max_flow,
+                group_of: &vec![None; n],
+                donor: &vec![false; n],
+                single_like: &single_like,
+                c_point_of: &c_point_of,
+                c_charged: &c_charged,
+            });
+            let (found, _moved) = crate::canonical::bns::charge_alt_path(&net, charged, neutral);
+            if std::env::var_os("INCHI_TRACE_PROTON").is_some() {
+                eprintln!("RIDE charged={charged} neutral={neutral} -> {found}");
+            }
+            if found {
+                context.h[neutral] -= 1;
+                context.charge[charged] = 0;
+                removed += 1;
+                paired = true;
+                break;
+            }
+        }
+        if !paired {
+            break;
+        }
+    }
+    removed
 }
 
 /// SimpleRemoveHplusNPO: every N/P-H(+) and OH(+) loses its proton.
