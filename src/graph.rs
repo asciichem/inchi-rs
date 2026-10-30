@@ -39,6 +39,12 @@ pub struct Structure {
     /// isotope-blind (the D/T add to the carrier's plain count); the
     /// /i layer reads this map.
     pub isotopic_h: std::collections::BTreeMap<usize, (u32, u32)>,
+    /// A HARD (DE)PROTONATION phase moved a proton on this structure
+    /// (the 5.1b charge-point ride-out or the 5.2b acidic hard
+    /// removal) — the reference's FLAG_FORCE_SALT_TAUT: the salt
+    /// t-group gates relax to donor-only and the salt merge admits
+    /// t-group-carrying candidates without a negative donor.
+    pub protons_hard_moved: bool,
 }
 
 /// Allowed valences of the organic subset; the implicit hydrogen

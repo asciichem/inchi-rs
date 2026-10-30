@@ -114,6 +114,7 @@ pub fn parse(input: &str) -> Result<Structure> {
         stereo_bonds,
         positions,
         isotopic_h: Default::default(),
+        protons_hard_moved: false,
     })
 }
 

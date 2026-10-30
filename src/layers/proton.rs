@@ -67,6 +67,7 @@ mod tests {
             stereo_bonds: Default::default(),
             positions: Default::default(),
             isotopic_h: Default::default(),
+            protons_hard_moved: false,
         };
         assert_eq!(
             ProtonLayer::default().emit(&s).unwrap(),
@@ -83,6 +84,7 @@ mod tests {
             stereo_bonds: Default::default(),
             positions: Default::default(),
             isotopic_h: Default::default(),
+            protons_hard_moved: false,
         };
         assert_eq!(
             ProtonLayer::default().emit(&s).unwrap(),
@@ -106,6 +108,7 @@ mod tests {
             stereo_bonds: Default::default(),
             positions: Default::default(),
             isotopic_h: Default::default(),
+            protons_hard_moved: false,
         };
         assert_eq!(ProtonLayer::default().emit(&s).unwrap(), None);
     }
@@ -128,6 +131,7 @@ mod tests {
             stereo_bonds: Default::default(),
             positions: Default::default(),
             isotopic_h: Default::default(),
+            protons_hard_moved: false,
         };
         assert_eq!(ProtonLayer::default().emit(&s).unwrap(), None);
 
@@ -143,6 +147,7 @@ mod tests {
             stereo_bonds: Default::default(),
             positions: Default::default(),
             isotopic_h: Default::default(),
+            protons_hard_moved: false,
         };
         assert_eq!(ProtonLayer::default().emit(&s).unwrap(), None);
     }
@@ -162,6 +167,7 @@ mod tests {
             stereo_bonds: Default::default(),
             positions: Default::default(),
             isotopic_h: Default::default(),
+            protons_hard_moved: false,
         };
         assert_eq!(
             ProtonLayer::default().emit(&s).unwrap(),
@@ -179,6 +185,7 @@ mod tests {
             stereo_bonds: Default::default(),
             positions: Default::default(),
             isotopic_h: Default::default(),
+            protons_hard_moved: false,
         };
         assert_eq!(
             ProtonLayer::default().emit(&s).unwrap(),
@@ -202,6 +209,7 @@ mod tests {
             stereo_bonds: Default::default(),
             positions: Default::default(),
             isotopic_h: Default::default(),
+            protons_hard_moved: false,
         };
         let hydrogens = s.hydrogens();
         assert_eq!(hydrogens[2], 0);

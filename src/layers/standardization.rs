@@ -126,10 +126,19 @@ pub fn normalize_internal_salts(structure: &mut Structure) {
         if let Some(site) = found {
             // The reference never re-derives H after moving a charge:
             // the neutralized anion stays at its anionic reading
-            // (zero implicit H), the cation loses its + to the pair.
+            // (zero implicit H), the cation loses its + to the pair,
+            // and the pair bond reads the neutral double (the
+            // >N⁺–O⁻ ⇒ >N=O promotion — the nitro/N-oxide standard
+            // skeleton the tautomer arithmetic reads).
             structure.atoms[anion].charge = 0;
             structure.atoms[anion].h_pinned = true;
             structure.atoms[site].charge = 0;
+            for bond in structure.bonds.iter_mut() {
+                let (from, to) = (bond.0, bond.1);
+                if (from == anion && to == site) || (from == site && to == anion) {
+                    bond.2 = 2;
+                }
+            }
             consumed[anion] = true;
             consumed[site] = true;
         }
@@ -279,6 +288,7 @@ mod tests {
             stereo_bonds: Default::default(),
             positions: Default::default(),
             isotopic_h: Default::default(),
+            protons_hard_moved: false,
         }
     }
 
