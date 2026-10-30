@@ -15,7 +15,7 @@
 
 pub mod aromatic;
 pub mod blossom;
-mod bns;
+pub(crate) mod bns;
 pub mod bond_stereo;
 pub mod emit;
 mod invariants;

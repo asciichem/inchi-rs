@@ -1073,6 +1073,68 @@ fn exists(net: &mut Network, roles: &Roles, double_side: usize, single_side: usi
     2 * sum >= ndots
 }
 
+/// bExistsAltPath under ALT_PATH_MODE_REM_PROTON as the instrumented
+/// oracle runs it on the acid-removal side (HardRemoveAcidicProtons):
+/// BOTH endpoints are the virtual t-group stars, not atoms — the
+/// H-donor star and the acidic =O/N-O star built over the whole
+/// structure. One dot vertex lands on the donor-side star
+/// (bAddNewVertex, cap 1) and one st-cap raise lands on the
+/// acceptor-side star (bAddStCapToAVertex); the removal is viable
+/// when the balanced augmentation covers the planted dots — the
+/// donor proton can ride the skeleton onto the acidic oxygen, which
+/// is where the reference then strips it as an acidic proton.
+pub(crate) fn rem_proton_route(net: &Network, donor: usize, acceptor: usize) -> bool {
+    let donor_star = group_vertex_of(net, donor, Kind::TGroup);
+    let acid_star = group_vertex_of(net, acceptor, Kind::TGroup);
+    let (Some(donor_star), Some(acid_star)) = (donor_star, acid_star) else {
+        return false;
+    };
+    if donor_star == acid_star {
+        return false;
+    }
+    // The reference's prechecks: the dot side must carry flow, and a
+    // group vertex whose edges all read doubled flow is refused
+    // (so far a group edge moves at most one unit per member).
+    if net.verts[donor_star].st_flow == 0 {
+        return false;
+    }
+    if net.verts[acid_star].st_flow == 2 * net.verts[acid_star].adj.len() as i32 {
+        return false;
+    }
+    let before: Vec<i32> = net.edges.iter().map(|edge| edge.flow).collect();
+    let mut work = net.clone();
+    let mut ndots = 0;
+    add_new_vertex_cap(&mut work, donor_star, 1, &mut ndots);
+    add_st_cap(&mut work, acid_star, donor_star, &mut ndots);
+    if ndots < 0 || ndots % 2 != 0 {
+        return false;
+    }
+    let mut sum = 0;
+    for _ in 0..MAX_PASSES {
+        let delta = balanced_network_search(&mut work);
+        if delta <= 0 {
+            let ok = delta == 0 && 2 * sum >= ndots;
+            if std::env::var_os("INCHI_TRACE_PROTON").is_some() {
+                eprintln!(
+                    "REM_PROTON donor={donor} acceptor={acceptor} dots={ndots} sum={sum} -> {ok}"
+                );
+            }
+            return ok;
+        }
+        sum += delta;
+    }
+    let ok = 2 * sum >= ndots;
+    if std::env::var_os("INCHI_TRACE_PROTON").is_some() {
+        let moved: Vec<usize> = (0..net.edges.len())
+            .filter(|&index| work.edges[index].flow != before[index])
+            .collect();
+        eprintln!(
+            "REM_PROTON donor={donor} acceptor={acceptor} dots={ndots} sum={sum} passes-out edges={moved:?} -> {ok}"
+        );
+    }
+    ok
+}
+
 /// bExistsAltPath under ALT_PATH_MODE_CHARGE: no role precheck, the
 /// generic setup (the H dot on the charged side, an extra st-cap on
 /// the neutral side), and the changed atom-atom bonds reported for
@@ -1234,5 +1296,49 @@ mod tests {
             acceptor_ok: vec![false, false],
         };
         assert!(!any_alt_path(&net, &roles, 0, 1));
+    }
+
+    #[test]
+    fn the_rem_proton_route_rides_the_donor_proton_to_the_acid_star() {
+        // N-H-C(=O)-C-N+: the H-donor star (the amide N) and the
+        // acidic =O star hang off the skeleton; the planted dots
+        // travel s -> dot -> donor star -> N - C(=O) - acid star -> t,
+        // exactly the fixture identity/breadth-580 shape.
+        let net = net(
+            5,
+            &[(0, 1, 1), (1, 2, 2), (1, 3, 1), (3, 4, 1)],
+            &[0, 1, 1, 0, 0],
+            &[Some(0), None, Some(1), None, None],
+            &[true, false, false, false, false],
+        );
+        assert!(rem_proton_route(&net, 0, 2));
+    }
+
+    #[test]
+    fn a_rem_proton_route_needs_an_acidic_star_member() {
+        // Same skeleton with the carbonyl oxygen unregistered: no
+        // acceptor-side star, no route — the N-H stays.
+        let net = net(
+            5,
+            &[(0, 1, 1), (1, 2, 2), (1, 3, 1), (3, 4, 1)],
+            &[0, 1, 1, 0, 0],
+            &[Some(0), None, None, None, None],
+            &[true, false, false, false, false],
+        );
+        assert!(!rem_proton_route(&net, 0, 2));
+    }
+
+    #[test]
+    fn a_flowless_donor_star_refuses_the_route_before_the_search() {
+        // The reference's precheck: the dot side must carry flow — a
+        // registered donor without its hydrogen plants no dots.
+        let net = net(
+            5,
+            &[(0, 1, 1), (1, 2, 2), (1, 3, 1), (3, 4, 1)],
+            &[0, 1, 1, 0, 0],
+            &[Some(0), None, Some(1), None, None],
+            &[false, false, false, false, false],
+        );
+        assert!(!rem_proton_route(&net, 0, 2));
     }
 }

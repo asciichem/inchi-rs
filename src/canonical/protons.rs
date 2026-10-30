@@ -939,6 +939,81 @@ fn charge_point_ride_out(context: &mut ProtonContext) -> i32 {
     removed
 }
 
+/// The hard-removal star memberships (HardRemoveAcidicProtons'
+/// CreateTGroupInBnStruct scans over the AR_HARD classes): the donor
+/// star holds the NP/OS-classed heteroatoms minus the acidic =O/N-O
+/// mask bits, the acid star exactly those =C=O / nitro-type oxygens;
+/// both under the reference's neutral-valence gate (chem valence + H
+/// - charge reads 2 for O/S/Se/Te, 3 for N/P — and a class-passing
+///   atom outside the gate ends that scan, as in the C).
+pub(crate) fn hard_removal_stars(context: &ProtonContext) -> (Vec<bool>, Vec<bool>) {
+    /// AR_HARD_TYP_HN: the N/P and O/S/Se/Te charge-type atoms.
+    const TYP_HN: u16 = att::ATOM_N
+        | att::ATOM_P
+        | att::ACIDIC_CO
+        | att::ACIDIC_S
+        | att::OO
+        | att::ZOO
+        | att::NO
+        | att::OTHER_ZO;
+    /// AR_HARD_MSK_HN: the NP/OS masks minus the acidic =O/N-O bits.
+    const MSK_HN: u32 = (atbit::NP_PLUS
+        | atbit::NP_PROTON
+        | atbit::NP_H
+        | atbit::N_MINUS
+        | atbit::NP
+        | atbit::COH
+        | atbit::CSH
+        | atbit::ZOH
+        | atbit::OOH
+        | atbit::ZOOH
+        | atbit::NOH
+        | atbit::N_OH
+        | atbit::ZO
+        | atbit::N_O
+        | atbit::CO_MINUS
+        | atbit::CS_MINUS
+        | atbit::ZO_MINUS
+        | atbit::OO_MINUS
+        | atbit::ZOO_MINUS
+        | atbit::NO_MINUS
+        | atbit::N_O_MINUS)
+        & !(atbit::CO | atbit::NO2);
+    /// AR_HARD_TYP_HA / AR_HARD_MSK_HA: the acidic carbonyl / nitro
+    /// oxygen the donor proton rides onto (the port's NO2 bit is the
+    /// reference's ATBIT_NO, the −N=O slot).
+    const TYP_HA: u16 = att::ACIDIC_CO | att::NO;
+    const MSK_HA: u32 = atbit::CO | atbit::NO2;
+
+    let n = context.element.len();
+    let mut donors = vec![false; n];
+    let mut acids = vec![false; n];
+    // The neutral-valence gate and the reference's scan-break quirk:
+    // per star, the first class-passing atom without a readable
+    // neutral valence stops the membership scan.
+    let neutral_valence =
+        |atom: usize| context.cbv2[atom] / 2 + context.h[atom] as i32 - context.charge[atom];
+    for atom in (0..n).map(|atom| (atom, atom_charge_type(context, atom))) {
+        let (typ, mask) = atom.1;
+        if typ & TYP_HA != 0 && mask & MSK_HA != 0 {
+            if !matches!(neutral_valence(atom.0), 2 | 3) {
+                break;
+            }
+            acids[atom.0] = true;
+        }
+    }
+    for atom in (0..n).map(|atom| (atom, atom_charge_type(context, atom))) {
+        let (typ, mask) = atom.1;
+        if typ & TYP_HN != 0 && mask & MSK_HN != 0 {
+            if !matches!(neutral_valence(atom.0), 2 | 3) {
+                break;
+            }
+            donors[atom.0] = true;
+        }
+    }
+    (donors, acids)
+}
+
 /// SimpleRemoveHplusNPO: every N/P-H(+) and OH(+) loses its proton.
 fn simple_remove_hplus_npo(context: &mut ProtonContext) -> u32 {
     let mut removed = 0;
@@ -1064,7 +1139,7 @@ fn simple_add_acidic_protons(context: &mut ProtonContext, quota: i64) -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use super::standardize;
+    use super::{hard_removal_stars, standardize, ProtonContext};
     use crate::graph::{AtomRecord, Structure};
 
     fn structure(atoms: Vec<(&str, i32, u32)>, bonds: Vec<(usize, usize, u32)>) -> Structure {
@@ -1156,5 +1231,30 @@ mod tests {
         let std = standardize(&s).expect("sulfate standardizes");
         assert_eq!(std.added_protons, 2);
         assert!(std.charge.iter().all(|&charge| charge == 0));
+    }
+
+    #[test]
+    fn the_hard_removal_stars_split_donor_from_acidic_oxygen() {
+        // The amide/cation shape (fixture identity/breadth-580): the
+        // donor star holds the N-H amide nitrogen, the acid star the
+        // carbonyl oxygen — the two virtual endpoints of the
+        // REM_PROTON route.
+        let s = structure(
+            vec![
+                ("C", 0, 0),
+                ("N", 0, 0),
+                ("C", 0, 0),
+                ("O", 0, 0),
+                ("C", 0, 0),
+                ("N", 1, 0),
+            ],
+            vec![(0, 1, 1), (1, 2, 1), (2, 3, 2), (2, 4, 1), (4, 5, 1)],
+        );
+        let context = ProtonContext::new(&s);
+        let (donors, acids) = hard_removal_stars(&context);
+        assert!(donors[1], "the amide N-H joins the donor star");
+        assert!(acids[3], "the =O joins the acid star");
+        assert!(!donors[3] && !acids[1], "the pair sits in disjoint stars");
+        assert!(donors.iter().zip(&acids).all(|(&d, &a)| !(d && a)));
     }
 }
