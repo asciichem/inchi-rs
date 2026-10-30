@@ -49,7 +49,7 @@ fn endpoint_valence(element: &str) -> Option<u32> {
 /// How an endpoint's bond-order sum relates to its heavy-atom valence:
 /// all single bonds = [`Role::Donor`], one double-bond worth =
 /// [`Role::Acceptor`].
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Role {
     Donor,
     Acceptor,
@@ -1220,14 +1220,18 @@ fn salt_charge_type(context: &Context, state: &Registration, atom: usize) -> Opt
         (_, -1) => 1,
         _ => return None,
     };
-    if context.bond_sum2[atom] / 2 + context.mobile(atom) as i32 != valence_needed {
+    // The reference's chem_bonds_valence + num_H — the raw hydrogen
+    // count, NOT the mobile units: on a pinned (charged) structure a
+    // deprotonated site's charge is not a hydrogen and must not
+    // inflate the valence fill.
+    if context.bond_sum2[atom] / 2 + context.hydrogens[atom] as i32 != valence_needed {
         return None;
     }
     let (carbon, _) = context.neighbors[atom][0];
     let carbon_record = &context.structure.atoms[carbon];
     if carbon_record.element != "C"
         || carbon_record.charge != 0
-        || context.bond_sum2[carbon] / 2 + context.mobile(carbon) as i32 != 4
+        || context.bond_sum2[carbon] / 2 + context.hydrogens[carbon] as i32 != 4
         || context.bond_sum2[carbon] / 2 == context.neighbors[carbon].len() as i32
     {
         return None;
@@ -1246,7 +1250,7 @@ fn salt_charge_type(context: &Context, state: &Registration, atom: usize) -> Opt
     if record.charge == -1 {
         subtype |= SALT_DONOR_NEG;
     }
-    if record.charge <= 0 && context.mobile(atom) > 0 {
+    if record.charge <= 0 && context.hydrogens[atom] > 0 {
         subtype |= SALT_DONOR_H;
     }
     if record.charge == 0 && context.bond_sum2[atom] / 2 == 2 {
@@ -1300,7 +1304,7 @@ fn other_salt_charge_type(context: &Context, state: &Registration, atom: usize) 
         if context.structure.atoms[atom].charge == -1 {
             subtype |= SALT_DONOR_NEG;
         }
-        if context.mobile(atom) > 0 {
+        if context.hydrogens[atom] > 0 {
             subtype |= SALT_DONOR_H;
         }
     }
@@ -2249,7 +2253,13 @@ fn check_pyrazole(
     {
         return false;
     }
-    let Some(last) = are_alt_bonds(bonds) else {
+    // The reference's path_bonds run from n2 around to the closure
+    // INTO n1 (DfsPath[1..]) — the seeded n1-n2 bond is NOT part of
+    // the alternation; its pattern type follows from the arc (the two
+    // ring arcs alternate). Feeding the seed bond in would demand the
+    // arc continue the seed's phase and reject fused cases (the
+    // indazole single-single junction) the reference accepts.
+    let Some(last) = are_alt_bonds(&bonds[1..]) else {
         return false;
     };
     match last {

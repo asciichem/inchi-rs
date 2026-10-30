@@ -1083,23 +1083,32 @@ fn exists(net: &mut Network, roles: &Roles, double_side: usize, single_side: usi
 /// when the balanced augmentation covers the planted dots — the
 /// donor proton can ride the skeleton onto the acidic oxygen, which
 /// is where the reference then strips it as an acidic proton.
-pub(crate) fn rem_proton_route(net: &Network, donor: usize, acceptor: usize) -> bool {
+/// The REM_PROTON search with the alternation it moved: the atom-atom
+/// bonds whose flow changed, signed by the π delta the reference's
+/// BNS_EF_SAVE_ALL|BNS_EF_ALTR_NS ride keeps (positive = the bond
+/// gained a π unit, negative = lost one). Star-member edges are
+/// dropped — only real bonds shift orders.
+pub(crate) fn rem_proton_route_moved(
+    net: &Network,
+    donor: usize,
+    acceptor: usize,
+) -> (bool, Vec<(usize, usize, i32)>) {
     let donor_star = group_vertex_of(net, donor, Kind::TGroup);
     let acid_star = group_vertex_of(net, acceptor, Kind::TGroup);
     let (Some(donor_star), Some(acid_star)) = (donor_star, acid_star) else {
-        return false;
+        return (false, Vec::new());
     };
     if donor_star == acid_star {
-        return false;
+        return (false, Vec::new());
     }
     // The reference's prechecks: the dot side must carry flow, and a
     // group vertex whose edges all read doubled flow is refused
     // (so far a group edge moves at most one unit per member).
     if net.verts[donor_star].st_flow == 0 {
-        return false;
+        return (false, Vec::new());
     }
     if net.verts[acid_star].st_flow == 2 * net.verts[acid_star].adj.len() as i32 {
-        return false;
+        return (false, Vec::new());
     }
     let before: Vec<i32> = net.edges.iter().map(|edge| edge.flow).collect();
     let mut work = net.clone();
@@ -1107,32 +1116,33 @@ pub(crate) fn rem_proton_route(net: &Network, donor: usize, acceptor: usize) -> 
     add_new_vertex_cap(&mut work, donor_star, 1, &mut ndots);
     add_st_cap(&mut work, acid_star, donor_star, &mut ndots);
     if ndots < 0 || ndots % 2 != 0 {
-        return false;
+        return (false, Vec::new());
     }
     let mut sum = 0;
-    for _ in 0..MAX_PASSES {
+    let ok = loop {
         let delta = balanced_network_search(&mut work);
         if delta <= 0 {
-            let ok = delta == 0 && 2 * sum >= ndots;
-            if std::env::var_os("INCHI_TRACE_PROTON").is_some() {
-                eprintln!(
-                    "REM_PROTON donor={donor} acceptor={acceptor} dots={ndots} sum={sum} -> {ok}"
-                );
-            }
-            return ok;
+            break delta == 0 && 2 * sum >= ndots;
         }
         sum += delta;
-    }
-    let ok = 2 * sum >= ndots;
+    };
+    let moved: Vec<(usize, usize, i32)> = (0..net.edges.len())
+        .filter(|&index| work.edges[index].flow != before[index])
+        .filter_map(|index| {
+            let edge = &net.edges[index];
+            let (a, b) = (edge.a as usize, edge.b as usize);
+            // Atom-atom bonds only; the group/star edges are the
+            // virtual plumbing.
+            (net.verts[a].kind == Kind::Atom && net.verts[b].kind == Kind::Atom)
+                .then(|| (a.min(b), a.max(b), work.edges[index].flow - before[index]))
+        })
+        .collect();
     if std::env::var_os("INCHI_TRACE_PROTON").is_some() {
-        let moved: Vec<usize> = (0..net.edges.len())
-            .filter(|&index| work.edges[index].flow != before[index])
-            .collect();
         eprintln!(
-            "REM_PROTON donor={donor} acceptor={acceptor} dots={ndots} sum={sum} passes-out edges={moved:?} -> {ok}"
+            "REM_PROTON donor={donor} acceptor={acceptor} dots={ndots} sum={sum} -> {ok} moved={moved:?}"
         );
     }
-    ok
+    (ok, moved)
 }
 
 /// bExistsAltPath under ALT_PATH_MODE_CHARGE: no role precheck, the
@@ -1311,7 +1321,7 @@ mod tests {
             &[Some(0), None, Some(1), None, None],
             &[true, false, false, false, false],
         );
-        assert!(rem_proton_route(&net, 0, 2));
+        assert!(rem_proton_route_moved(&net, 0, 2).0);
     }
 
     #[test]
@@ -1325,7 +1335,7 @@ mod tests {
             &[Some(0), None, None, None, None],
             &[true, false, false, false, false],
         );
-        assert!(!rem_proton_route(&net, 0, 2));
+        assert!(!rem_proton_route_moved(&net, 0, 2).0);
     }
 
     #[test]
@@ -1339,6 +1349,6 @@ mod tests {
             &[Some(0), None, Some(1), None, None],
             &[false, false, false, false, false],
         );
-        assert!(!rem_proton_route(&net, 0, 2));
+        assert!(!rem_proton_route_moved(&net, 0, 2).0);
     }
 }
