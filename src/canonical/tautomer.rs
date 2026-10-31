@@ -881,11 +881,6 @@ fn build_links(context: &Context) -> Vec<BTreeSet<usize>> {
             changed = salt2_round(context, &mut state);
             s1 = changed;
         }
-        let mut m = false;
-        if !changed {
-            changed = merge_salt_round(context, &mut state);
-            m = changed;
-        }
         if !changed {
             changed = alternation_round(context, &mut state);
             a = changed;
@@ -893,7 +888,7 @@ fn build_links(context: &Context) -> Vec<BTreeSet<usize>> {
         if std::env::var_os("INCHI_TRACE_BNS").is_some() {
             let groups: Vec<usize> = state.group_of.iter().flatten().copied().collect();
             eprintln!(
-                "FIXPOINT pass={pass} reg={r} walk={w} charge={c} salt0={s0} salt2={s1} merge={m} alt={a} groups={} marks={} altered={}",
+                "FIXPOINT pass={pass} reg={r} walk={w} charge={c} salt0={s0} salt2={s1} merge=false alt={a} groups={} marks={} altered={}",
                 groups.len(),
                 state.marks.len(),
                 state.altered.len()
@@ -904,6 +899,12 @@ fn build_links(context: &Context) -> Vec<BTreeSet<usize>> {
         }
         alternated = false;
     }
+    // The salt merge is terminal (the reference's MergeSaltTautGroups
+    // runs after the whole master loop): its co-membership never
+    // feeds back into the charge rounds — a c-point the charge round
+    // registers against a merged group is a c-point the reference
+    // never registers.
+    merge_salt_round(context, &mut state);
     // Adjacency over co-membership (components() then yields the
     // groups; empty ones drop).
     let mut members: Vec<Vec<usize>> = vec![Vec::new(); n];
