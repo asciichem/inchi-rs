@@ -22,6 +22,7 @@ pub mod pyo3_binding;
 #[cfg(feature = "wasm")]
 pub mod wasm_binding;
 
+pub mod aux;
 pub mod canonical;
 pub mod engine;
 mod error;

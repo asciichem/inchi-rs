@@ -332,6 +332,54 @@ fn is_metal(el: i32) -> bool {
 }
 
 /// Z atoms: the centers the O/S/Se/Te terminal classification keys on.
+/// The reference's `get_unusual_el_valence`: the chemical valence
+/// (`bonds_valence + num_h`) unless exactly one registered valence for
+/// the (element, charge) state fits between the bond count and it —
+/// the aux `/CRV:` suffix that flags bonds the reader could not
+/// otherwise reconstruct.
+pub(crate) fn unusual_el_valence(
+    el: i32,
+    charge: i32,
+    bonds_valence: i32,
+    num_h: u32,
+    num_bonds: u32,
+) -> i32 {
+    if num_bonds == 0 && num_h == 0 {
+        return 0;
+    }
+    if !(-2..=2).contains(&charge) {
+        return if bonds_valence == num_bonds as i32 {
+            0
+        } else {
+            bonds_valence
+        };
+    }
+    if el_valences(el, charge)[0] == 0 && bonds_valence == num_bonds as i32 {
+        return 0;
+    }
+    let chem_valence = bonds_valence + num_h as i32;
+    let mut num_found = 0;
+    let mut exact_found = false;
+    for known in el_valences(el, charge) {
+        if known == 0 {
+            continue;
+        }
+        let known = i32::from(known);
+        if num_bonds as i32 <= known && known <= chem_valence {
+            num_found += 1;
+            if known == chem_valence {
+                exact_found = true;
+                break;
+            }
+        }
+    }
+    if exact_found && num_found == 1 {
+        0
+    } else {
+        chem_valence
+    }
+}
+
 fn is_z_atom(el: i32) -> bool {
     matches!(
         el,
@@ -341,7 +389,7 @@ fn is_z_atom(el: i32) -> bool {
 
 /// Valences by (element, charge state -2..+2), from the reference's
 /// cValence table. Zero = the state is not allowed.
-fn el_valences(el: i32, charge: i32) -> [u8; 5] {
+pub(crate) fn el_valences(el: i32, charge: i32) -> [u8; 5] {
     let idx = (charge.clamp(-2, 2) + 2) as usize;
     let row: [[u8; 5]; 5] = match el {
         1 => [[0u8, 0, 1, 0, 0]; 5],               // H

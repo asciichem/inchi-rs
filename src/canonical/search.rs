@@ -178,16 +178,17 @@ pub fn base_symmetry(adjacency: &[Vec<usize>], invariants: &[(u16, u16)]) -> Vec
     orbit_min_symmetry(&hfree.final_search)
 }
 
-/// Final canonical rank (1-based) per atom. The mobile groups (rank
-/// free: count + member atoms) ride along as the terminal compare's
-/// final rows — the reference's t-group CT section, which settles
-/// the ties the connection table and the hydrogen layer leave equal.
-pub fn canonical_ranks(
+/// Final canonical rank (1-based) per atom, plus the orbit-minimal
+/// symmetry class per atom of the same search — the pair the
+/// identifier layers and the aux equivalence classes speak. The
+/// symmetry is H-aware: it comes from the stage-two orbits when the
+/// hydrogen-aware pass runs, from the H-free orbits otherwise.
+pub fn canonical_ranks_and_symmetry(
     adjacency: &[Vec<usize>],
     invariants: &[(u16, u16)],
     hydrogens: &[u32],
     groups: &[(u32, Vec<usize>)],
-) -> Vec<u32> {
+) -> (Vec<u32>, Vec<u32>) {
     let n = adjacency.len();
     let hfree = hfree_canonical(adjacency, invariants);
     let symmetry = orbit_min_symmetry(&hfree.final_search);
@@ -195,9 +196,10 @@ pub fn canonical_ranks(
     // rows: the H-free numbering is the final answer, exactly the
     // reference's copy of nCanonRankNoTautH.
     if groups.is_empty() && hydrogens_uniform(&symmetry, hydrogens) {
-        return (0..n)
+        let ranks = (0..n)
             .map(|atom| hfree.final_search.partition.rank_of(atom))
             .collect();
+        return (ranks, symmetry);
     }
     // Stage-2 auxiliary partition: (symmetry rank, encoded hydrogen
     // count), then equitable refinement — the reference's nRankAux.
@@ -233,8 +235,34 @@ pub fn canonical_ranks(
         eprintln!("{line}");
     }
 
-    let informed = search_stage_two(adjacency, base, &aux_rank, hydrogens, groups);
-    (0..n).map(|atom| informed.rank_of(atom)).collect()
+    let (informed, informed_orbits) =
+        search_stage_two(adjacency, base, &aux_rank, hydrogens, groups);
+    let ranks = (0..n).map(|atom| informed.rank_of(atom)).collect();
+    // The stage-two orbits: table+hydrogen-equal terminals merged.
+    // The symmetry the aux equivalence classes speak is the orbit
+    // MINIMUM over them, mirroring `orbit_min_symmetry`.
+    let mut min_by_root = vec![u32::MAX; n];
+    for atom in 0..n {
+        let root = informed_orbits.representative(atom);
+        min_by_root[root] = min_by_root[root].min(informed.rank_of(atom));
+    }
+    let informed_symmetry = (0..n)
+        .map(|atom| min_by_root[informed_orbits.representative(atom)])
+        .collect();
+    (ranks, informed_symmetry)
+}
+
+/// Final canonical rank (1-based) per atom. The mobile groups (rank
+/// free: count + member atoms) ride along as the terminal compare's
+/// final rows — the reference's t-group CT section, which settles
+/// the ties the connection table and the hydrogen layer leave equal.
+pub fn canonical_ranks(
+    adjacency: &[Vec<usize>],
+    invariants: &[(u16, u16)],
+    hydrogens: &[u32],
+    groups: &[(u32, Vec<usize>)],
+) -> Vec<u32> {
+    canonical_ranks_and_symmetry(adjacency, invariants, hydrogens, groups).0
 }
 
 /// The connection table over the final numbering.
@@ -372,7 +400,7 @@ fn search_stage_two(
     aux_rank: &[u32],
     hydrogens: &[u32],
     groups: &[(u32, Vec<usize>)],
-) -> Partition {
+) -> (Partition, Orbits) {
     let n = adjacency.len();
     let mut best: Option<Partition> = None;
     let mut first: Option<Partition> = None;
@@ -387,7 +415,10 @@ fn search_stage_two(
         &mut best,
         &mut orbits,
     );
-    best.expect("a discrete partition is always reached")
+    (
+        best.expect("a discrete partition is always reached"),
+        orbits,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]

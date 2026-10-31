@@ -130,3 +130,81 @@ fn the_identifier_equals_the_oracle_recording() {
         retirements.join("\n")
     );
 }
+
+/// The AuxInfo gate: the engine's auxiliary line — canonical
+/// numbering, equivalence classes, charges, reversibility echo — must
+/// equal the oracle's recording byte-for-byte on the same corpus.
+#[test]
+fn the_aux_info_equals_the_oracle_recording() {
+    let dir = suite_dir();
+    let fixtures = dir.join("corpus/fixtures");
+    let mut cases = Vec::new();
+    let mut files: Vec<PathBuf> = fs::read_dir(&fixtures)
+        .expect("corpus fixtures dir")
+        .filter_map(|entry| {
+            let path = entry.expect("dir entry").path();
+            let name = path
+                .file_name()
+                .expect("name")
+                .to_string_lossy()
+                .to_string();
+            (name.starts_with("identity") && name.ends_with(".json")).then_some(path)
+        })
+        .collect();
+    files.sort();
+    assert!(!files.is_empty(), "no identity fixture files");
+    for file in files {
+        let parsed: Vec<serde_json::Value> =
+            serde_json::from_str(&fs::read_to_string(&file).expect("read fixtures"))
+                .expect("valid fixtures");
+        cases.extend(parsed);
+    }
+    let triage: serde_json::Value = match fs::read_to_string(dir.join("corpus/triage.json")) {
+        Ok(text) => serde_json::from_str(&text).expect("valid triage"),
+        Err(_) => serde_json::Value::Null,
+    };
+
+    let mut pass = 0;
+    let mut skipped = 0;
+    let mut failures = Vec::new();
+    for case in &cases {
+        let id = case["id"].as_str().expect("id");
+        let expected_failure = triage.get(id).map(|_| ()).is_some();
+        let Some(recorded) = case["aux"].as_str() else {
+            continue;
+        };
+        let molfile = case["molfile"].as_str().expect("molfile");
+        match inchi_rs::Engine::from_molfile(molfile).and_then(|engine| engine.aux_string()) {
+            Ok(assembled) => {
+                if assembled == recorded {
+                    pass += 1;
+                } else if !expected_failure {
+                    failures.push(format!(
+                        "{id}: assembled {assembled:?} != oracle {recorded:?}"
+                    ));
+                } else {
+                    skipped += 1;
+                }
+            }
+            Err(error) => {
+                if error.message().contains("beyond the ±1 corpus gate") {
+                    continue;
+                }
+                if !expected_failure {
+                    failures.push(format!("{id}: {error}"));
+                } else {
+                    skipped += 1;
+                }
+            }
+        }
+    }
+
+    assert!(
+        failures.is_empty(),
+        "{} aux mismatch(es):\n{}\n(aux pass: {pass}, expected-failure skips: {skipped}, total with aux: {})",
+        failures.len(),
+        failures.join("\n"),
+        pass + skipped + failures.len()
+    );
+    println!("aux gate: pass {pass}, expected-failure skips {skipped}");
+}
