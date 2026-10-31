@@ -834,16 +834,31 @@ pub fn standardize(structure: &Structure) -> Option<StandardizedProtons> {
     }
 
     // 5.1b: the hard removal from cationic N/P (the reference's
-    // HardRemoveHplusNP, bCancelChargesAlways=1): the +1 of an H-free
-    // N/P(+) cancels against a donor proton the REM_PROTON route
-    // reaches — the charge group star on the cation side, the donor
-    // star on the proton side. The charge-point ride-out is this
-    // phase's port: both end states read the charged atom neutral and
-    // the donor's proton gone. It runs BEFORE the 5.2 acid phase —
-    // the reference never re-runs it afterwards.
-    let rode_out = charge_point_ride_out(&mut context);
-    removed += rode_out as u32;
-    hard_moved |= rode_out > 0;
+    // HardRemoveHplusNP under bCancelChargesAlways=1): a (+) charge
+    // group (every N-classed MSK_NP atom, charged or not) rides out
+    // against a PR_HARD H-star over the whole structure — the REM_
+    // PROTON route moves the proton (and the pi alternation) from the
+    // star's donors and cancels the charge at its destination, where
+    // AddOrRemoveExplOrImplH(+1) may pin an extra fixed hydrogen (the
+    // diazonium ride). Gated on a nonzero NP_Plus total, as in the C.
+    // It runs BEFORE the 5.2 acid phase — the reference never re-runs
+    // it afterwards.
+    let after_51a = totals(&context);
+    if after_51a[attot::NP_PLUS] > 0 {
+        // The /p accounting is the reference's net proton counter
+        // (tni.nNumRemovedProtons): every H that leaves the structure
+        // counts up, every H the ride pins at its destination counts
+        // back down — the cancelled (+) itself never does.
+        let hydrogens_before: i64 = context.h.iter().map(|&h| h as i64).sum();
+        let rode_out = hard_remove_hplus_np(&mut context);
+        let hydrogens_after: i64 = context.h.iter().map(|&h| h as i64).sum();
+        hard_moved |= rode_out > 0;
+        if hydrogens_before > hydrogens_after {
+            removed += (hydrogens_before - hydrogens_after) as u32;
+        } else if hydrogens_after > hydrogens_before {
+            added += (hydrogens_after - hydrogens_before) as u32;
+        }
+    }
 
     // 5.2a: acidic protons off neutral atoms (net +), protons onto
     // anions (net -)
@@ -896,97 +911,166 @@ pub fn standardize(structure: &Structure) -> Option<StandardizedProtons> {
     })
 }
 
-/// GetChargeType / bCanBeACPoint: the charge-point classes the
-/// pairing reads (N: charge 1, neutral bonds 3, neutral valence 3).
-fn charge_point_class(context: &ProtonContext, atom: usize) -> Option<bool> {
-    if !matches!(context.element[atom], 7 | 15) {
-        return None;
-    }
-    match context.charge[atom] {
-        1 => Some(true),
-        0 => {
-            let bonds_valence = context.cbv2[atom] / 2 + context.h[atom] as i32;
-            let num_bonds = context.valence(atom) as i32 + context.h[atom] as i32;
-            // C_SUBTYPE_NEUTRAL_H_DONOR only: valence under the
-            // neutral valence WITH hydrogens — a tertiary all-single
-            // N is NEUTRAL_NON_TAUT (no proton to shed).
-            if bonds_valence == 3
-                && num_bonds == 3
-                && context.valence(atom) < 3
-                && context.h[atom] > 0
-            {
-                Some(false)
-            } else {
-                None
-            }
-        }
-        _ => None,
-    }
-}
+/// PR_HARD masks (ichi_bns.c): the (+) charge group reads MSK_NP, the
+/// H-group and the (-) group read MSK_NP | MSK_OS — every charge-type
+/// bit except the onium OH(+)/O(+), the bare proton and the halogens.
+const PR_HARD_MSK_NP: u32 =
+    atbit::NP_PLUS | atbit::NP_PROTON | atbit::NP_H | atbit::N_MINUS | atbit::NP;
+const PR_HARD_MSK_OS: u32 = atbit::COH
+    | atbit::CSH
+    | atbit::ZOH
+    | atbit::OOH
+    | atbit::ZOOH
+    | atbit::NOH
+    | atbit::N_OH
+    | atbit::CO
+    | atbit::ZO
+    | atbit::NO2
+    | atbit::N_O
+    | atbit::CO_MINUS
+    | atbit::CS_MINUS
+    | atbit::ZO_MINUS
+    | atbit::OO_MINUS
+    | atbit::ZOO_MINUS
+    | atbit::NO_MINUS
+    | atbit::N_O_MINUS;
+/// PR_HARD_TYP_H: ATTYP_N | ATTYP_OS — the N class plus the acidic
+/// CO/S, OO, ZOO, NO and other-ZO classes (NOT the plain O-minus).
+const PR_HARD_TYP_H: u16 =
+    att::ATOM_N | att::ACIDIC_CO | att::ACIDIC_S | att::OO | att::ZOO | att::NO | att::OTHER_ZO;
 
-/// Pair each charged point with a neutral H-donor point the charge
-/// can walk to (the CHARGE alt path over a c-group star) and ride the
-/// +1 out on the donor's proton.
-fn charge_point_ride_out(context: &mut ProtonContext) -> i32 {
+/// HardRemoveHplusNP (TECHMAN 5.1b, bCancelChargesAlways=1): while a
+/// REM_PROTON route runs from the PR_HARD H-star to the (+) charge
+/// group, each success applies the found alternating paths — the H
+/// deltas land on the t-group star members (AddOrRemoveExplOrImplH
+/// on both ends: donors shed their proton, the destination may pin a
+/// fixed hydrogen), the charge deltas land on the charge-group
+/// members (the (+) leaves the cation), and the moved atom-atom bonds
+/// keep their new orders. Every pass re-reads both stars from the
+/// updated H/charge/bond state.
+fn hard_remove_hplus_np(context: &mut ProtonContext) -> u32 {
     let n = context.element.len();
-    let mut removed = 0;
-    while let Some(charged) =
-        (0..n).find(|&atom| charge_point_class(context, atom) == Some(true) && context.h[atom] == 0)
-    {
-        let mut paired = false;
-        for neutral in 0..n {
-            if neutral == charged || charge_point_class(context, neutral) != Some(false) {
+    let mut rounds = 0;
+    loop {
+        // The (+) charge group: N-classed MSK_NP atoms at charge 0 or
+        // +1 (CreateCGroupInBnStruct's OPPOSITE_CHARGE_IN_CGROUP=0
+        // gate); the charged member's star edge flows 0, the neutral
+        // members' flow 1.
+        let plus: Vec<(usize, bool)> = (0..n)
+            .filter_map(|atom| {
+                let (typ, mask) = atom_charge_type(context, atom);
+                if typ & att::ATOM_N == 0 || mask & PR_HARD_MSK_NP == 0 {
+                    return None;
+                }
+                match context.charge[atom] {
+                    0 => Some((atom, false)),
+                    1 => Some((atom, true)),
+                    _ => None,
+                }
+            })
+            .collect();
+        // The H-star: the PR_HARD classes under the
+        // CreateTGroupInBnStruct gates — the neutral-valence break
+        // ends the membership scan, the per-member edge reads
+        // cap = neutral valence - bonds (raised for -NH2-) and
+        // flow = the capped hydrogen count.
+        let mut h_star: Vec<(usize, i32, i32)> = Vec::new();
+        for atom in 0..n {
+            let (typ, mask) = atom_charge_type(context, atom);
+            if typ & PR_HARD_TYP_H == 0 || mask & (PR_HARD_MSK_NP | PR_HARD_MSK_OS) == 0 {
                 continue;
             }
-            let mut c_point_of: Vec<Option<usize>> = vec![None; n];
-            c_point_of[charged] = Some(0);
-            c_point_of[neutral] = Some(0);
-            let mut c_charged = vec![false; n];
-            c_charged[charged] = true;
-            let mut bond_adjacency: Vec<Vec<(usize, i32, bool)>> = vec![Vec::new(); n];
-            let mut single_like: Vec<Vec<bool>> = vec![Vec::new(); n];
-            for &(from, to, order2) in &context.bonds {
-                // The tautomer build's flow convention: order minus
-                // one (single 0, double 1, triple 2; aromatic 1).
-                let flow = match order2 {
-                    2 => 0,
-                    6 => 2,
-                    _ => 1,
-                };
-                bond_adjacency[from].push((to, flow, false));
-                bond_adjacency[to].push((from, flow, false));
-                single_like[from].push(true);
-                single_like[to].push(true);
-            }
-            let max_flow: Vec<i32> = (0..n)
-                .map(|atom| (context.cbv2[atom] / 2 - context.valence(atom) as i32).max(0))
-                .collect();
-            let net = crate::canonical::bns::Network::build(&crate::canonical::bns::Build {
-                bond_adjacency: &bond_adjacency,
-                max_flow: &max_flow,
-                group_of: &vec![None; n],
-                donor: &vec![false; n],
-                single_like: &single_like,
-                c_point_of: &c_point_of,
-                c_charged: &c_charged,
-            });
-            let (found, _moved) = crate::canonical::bns::charge_alt_path(&net, charged, neutral);
-            if std::env::var_os("INCHI_TRACE_PROTON").is_some() {
-                eprintln!("RIDE charged={charged} neutral={neutral} -> {found}");
-            }
-            if found {
-                context.h[neutral] -= 1;
-                context.charge[charged] = 0;
-                removed += 1;
-                paired = true;
+            let neutral_valence =
+                context.cbv2[atom] / 2 + context.h[atom] as i32 - context.charge[atom];
+            if !matches!(neutral_valence, 2 | 3) {
                 break;
             }
+            let valence = context.neighbors[atom].len() as i32;
+            let mut cap = neutral_valence - valence;
+            if neutral_valence == 3 && valence > 1 {
+                cap += 1;
+            }
+            let flow = cap.min(context.h[atom] as i32);
+            h_star.push((atom, cap, flow));
         }
-        if !paired {
+        if plus.is_empty() || h_star.is_empty() {
             break;
         }
+        // The ride network: the skeleton at the standard flow
+        // convention, then the three stars in the reference's
+        // creation order — (+) group, (-) group, H-group.
+        let bonds: Vec<(usize, usize, i32)> = context
+            .bonds
+            .iter()
+            .map(|&(from, to, order2)| {
+                let flow = match order2 {
+                    4 => 1,
+                    6 => 2,
+                    _ => 0,
+                };
+                (from, to, flow)
+            })
+            .collect();
+        let max_flow: Vec<i32> = (0..n)
+            .map(|atom| (context.cbv2[atom] / 2 - context.neighbors[atom].len() as i32).max(0))
+            .collect();
+        // The (-) group: the same PR_HARD classes at charge 0 or -1,
+        // without the H-star's valence gates.
+        let minus: Vec<(usize, bool)> = (0..n)
+            .filter_map(|atom| {
+                let (typ, mask) = atom_charge_type(context, atom);
+                if typ & PR_HARD_TYP_H == 0 || mask & (PR_HARD_MSK_NP | PR_HARD_MSK_OS) == 0 {
+                    return None;
+                }
+                match context.charge[atom] {
+                    0 => Some((atom, false)),
+                    -1 => Some((atom, true)),
+                    _ => None,
+                }
+            })
+            .collect();
+        let (net, donor_star, acceptor_star) =
+            crate::canonical::bns::build_hnp(&crate::canonical::bns::HnpSpec {
+                bonds,
+                max_flow,
+                plus,
+                minus,
+                h_star,
+            });
+        let ride = crate::canonical::bns::star_ride(&net, donor_star, acceptor_star);
+        if std::env::var_os("INCHI_TRACE_PROTON").is_some() {
+            eprintln!(
+                "HNP round={rounds} route={} tg={:?} cg={:?} bonds={:?}",
+                ride.route, ride.tg, ride.cg, ride.bonds
+            );
+        }
+        if !ride.route {
+            break;
+        }
+        // Apply: the H ride onto the t-group members, the charge ride
+        // off the charge-group members, and the pi alternation the
+        // route moved keeps its new orders.
+        for (atom, delta) in &ride.tg {
+            let updated = context.h[*atom] as i32 + delta;
+            context.h[*atom] = updated.max(0) as u32;
+        }
+        for (atom, delta) in &ride.cg {
+            context.charge[*atom] -= delta;
+        }
+        for (a, b, delta) in &ride.bonds {
+            let Some(entry) = context.bonds.iter_mut().find(|entry| {
+                let (from, to) = (entry.0, entry.1);
+                (from == *a && to == *b) || (from == *b && to == *a)
+            }) else {
+                continue;
+            };
+            entry.2 = (entry.2 + 2 * delta).max(2);
+            context.cbv2[*a] += 2 * delta;
+            context.cbv2[*b] += 2 * delta;
+        }
+        rounds += 1;
     }
-    removed
+    rounds
 }
 
 /// The hard-removal star memberships (HardRemoveAcidicProtons'

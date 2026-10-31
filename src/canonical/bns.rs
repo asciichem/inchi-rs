@@ -29,8 +29,8 @@ struct Edge {
     forbidden: bool,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Kind {
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Kind {
     Atom,
     CGroup,
     TGroup,
@@ -795,6 +795,11 @@ fn add_new_vertex(net: &mut Network, host: usize, ndots: &mut i32) {
 fn add_st_cap(net: &mut Network, v1: usize, skip: usize, ndots: &mut i32) {
     net.verts[v1].st_cap += 1;
     *ndots += 1;
+    // The reference raises no edge caps from a group vertex — the
+    // whole increment block sits under `if (!(pVert1->type & ANY_GROUP))`.
+    if net.verts[v1].kind != Kind::Atom {
+        return;
+    }
     let cap = net.verts[v1].st_cap;
     let adj = net.verts[v1].adj.clone();
     for edge in adj {
@@ -1143,6 +1148,248 @@ pub(crate) fn rem_proton_route_moved(
         );
     }
     (ok, moved)
+}
+
+/// The ride result over the two virtual stars: the H deltas on the
+/// t-group star edges, the charge deltas on the c-group star edges,
+/// and the atom-atom bond flow deltas (the pi alternation the ride
+/// keeps — BNS_EF_SAVE_ALL | BNS_EF_ALTR_NS).
+#[derive(Debug, Default)]
+pub(crate) struct StarRide {
+    pub route: bool,
+    pub tg: Vec<(usize, i32)>,
+    pub cg: Vec<(usize, i32)>,
+    pub bonds: Vec<(usize, usize, i32)>,
+}
+
+/// The HardRemoveHplusNP network inputs: the skeleton at the standard
+/// flow convention plus the three stars in the reference's creation
+/// order — the (+) charge group, the (-) charge group, the PR_HARD
+/// H-group (vertex ids follow that order).
+pub(crate) struct HnpSpec {
+    /// Atom-atom bonds in input order: (a, b, flow) with the flow the
+    /// bond order reads (single 0, double 1, triple 2).
+    pub bonds: Vec<(usize, usize, i32)>,
+    /// Per atom: MAX_AT_FLOW — the st capacity.
+    pub max_flow: Vec<i32>,
+    /// The (+) group members: (atom, carries-the-plus).
+    pub plus: Vec<(usize, bool)>,
+    /// The (-) group members (charge 0 or -1 under the NEG classes).
+    pub minus: Vec<(usize, bool)>,
+    /// The H-group members: (atom, edge cap, edge flow).
+    pub h_star: Vec<(usize, i32, i32)>,
+}
+
+/// AllocateAndInitBnStruct + CreateCGroupInBnStruct(+) +
+/// CreateCGroupInBnStruct(-) + CreateTGroupInBnStruct, in that order,
+/// each with its member-edge bookkeeping and the zero-capacity bond
+/// raises the reference runs at creation time. Returns the network
+/// and the (t-group star, plus star) vertex pair.
+pub(crate) fn build_hnp(spec: &HnpSpec) -> (Network, usize, usize) {
+    let n = spec.max_flow.len();
+    let mut verts: Vec<Vertex> = (0..n)
+        .map(|i| Vertex {
+            st_cap: spec.max_flow[i],
+            st_flow: 0,
+            st_path: false,
+            adj: Vec::new(),
+            kind: Kind::Atom,
+        })
+        .collect();
+    let mut edges: Vec<Edge> = Vec::new();
+    let mut made: std::collections::HashMap<(usize, usize), u32> = std::collections::HashMap::new();
+    for i in 0..n {
+        for &(a, b, flow) in &spec.bonds {
+            if a != i && b != i {
+                continue;
+            }
+            let neigh = if a == i { b } else { a };
+            if made.contains_key(&(i.min(neigh), i.max(neigh))) {
+                continue;
+            }
+            let cap = spec.max_flow[i]
+                .min(spec.max_flow[neigh])
+                .min(MAX_BOND_EDGE_CAP);
+            let index = edges.len() as u32;
+            edges.push(Edge {
+                a: i as u32,
+                b: neigh as u32,
+                cap,
+                flow,
+                path: false,
+                forbidden: false,
+            });
+            made.insert((i.min(neigh), i.max(neigh)), index);
+            verts[i].st_flow += flow;
+            verts[neigh].st_flow += flow;
+            verts[i].adj.push(index);
+            verts[neigh].adj.push(index);
+        }
+    }
+    // The two charge-group stars, then the H-group star (the
+    // reference's creation order fixes the vertex ids).
+    for kind in [Kind::CGroup, Kind::CGroup, Kind::TGroup] {
+        verts.push(Vertex {
+            st_cap: 0,
+            st_flow: 0,
+            st_path: false,
+            adj: Vec::new(),
+            kind,
+        });
+    }
+    let plus_star = n;
+    let minus_star = n + 1;
+    let tg_star = n + 2;
+    // CreateCGroupInBnStruct: member edges cap 1; the edge flows 1
+    // unless the member carries the star's own charge — a (+) star's
+    // charged member flows 0, a (-) star's charged member flows 1 —
+    // and the st books count the flow on both ends, then the member's
+    // zero-capacity bonds raise.
+    let connect_c_group =
+        |verts: &mut Vec<Vertex>, edges: &mut Vec<Edge>, star: usize, members: &[(usize, bool)]| {
+            for &(atom, charged) in members {
+                let index = edges.len() as u32;
+                let flow = i32::from(!charged);
+                edges.push(Edge {
+                    a: atom as u32,
+                    b: star as u32,
+                    cap: 1,
+                    flow,
+                    path: false,
+                    forbidden: false,
+                });
+                verts[atom].adj.push(index);
+                verts[star].adj.push(index);
+                if flow > 0 {
+                    verts[star].st_cap += 1;
+                    verts[star].st_flow += 1;
+                    verts[atom].st_cap += 1;
+                    verts[atom].st_flow += 1;
+                }
+                raise_zero_cap_bonds(verts, edges, atom);
+            }
+        };
+    connect_c_group(&mut verts, &mut edges, plus_star, &spec.plus);
+    connect_c_group(&mut verts, &mut edges, minus_star, &spec.minus);
+    // CreateTGroupInBnStruct: member edges carry the per-member
+    // capacity and the capped hydrogen flow.
+    for &(atom, cap, flow) in &spec.h_star {
+        let index = edges.len() as u32;
+        edges.push(Edge {
+            a: atom as u32,
+            b: tg_star as u32,
+            cap,
+            flow,
+            path: false,
+            forbidden: false,
+        });
+        verts[atom].adj.push(index);
+        verts[tg_star].adj.push(index);
+        verts[tg_star].st_cap += flow;
+        verts[tg_star].st_flow += flow;
+        verts[atom].st_cap += flow;
+        verts[atom].st_flow += flow;
+    }
+    for &(atom, _, _) in &spec.h_star {
+        raise_zero_cap_bonds(&mut verts, &mut edges, atom);
+    }
+    (Network { verts, edges }, tg_star, plus_star)
+}
+
+/// The FIX_CPOINT_BOND_CAP / CreateTGroupInBnStruct bond raise: a
+/// member's zero-capacity bond opens to min(neighbor st-cap, member
+/// st-cap, cap bound) over the member's current st-cap.
+fn raise_zero_cap_bonds(verts: &mut [Vertex], edges: &mut [Edge], atom: usize) {
+    let member_cap = verts[atom].st_cap;
+    let bond_edges: Vec<usize> = verts[atom]
+        .adj
+        .iter()
+        .rev()
+        .copied()
+        .map(|edge| edge as usize)
+        .filter(|&edge| {
+            let edge = &edges[edge];
+            let other = if edge.a as usize == atom {
+                edge.b as usize
+            } else {
+                edge.a as usize
+            };
+            verts[other].kind == Kind::Atom
+        })
+        .collect();
+    for edge in bond_edges {
+        if edges[edge].cap == 0 {
+            let edge_ref = &edges[edge];
+            let neigh = if edge_ref.a as usize == atom {
+                edge_ref.b as usize
+            } else {
+                edge_ref.a as usize
+            };
+            let raised = verts[neigh].st_cap.min(member_cap).min(MAX_BOND_EDGE_CAP);
+            edges[edge].cap = raised;
+        }
+    }
+}
+
+/// bExistsAltPath under ALT_PATH_MODE_REM_PROTON between the freshly
+/// created HardRemoveHplusNP stars (the PR_HARD t-group as the donor
+/// side, the (+) charge group as the acceptor side): one dot vertex
+/// on the t-group star, one st-cap raise on the charge-group star,
+/// and every flow change the augmentation made reports per site.
+pub(crate) fn star_ride(net: &Network, donor_star: usize, acceptor_star: usize) -> StarRide {
+    let mut ride = StarRide::default();
+    if net.verts[donor_star].st_flow == 0 {
+        return ride;
+    }
+    if net.verts[acceptor_star].st_flow == 2 * net.verts[acceptor_star].adj.len() as i32 {
+        return ride;
+    }
+    let before: Vec<i32> = net.edges.iter().map(|edge| edge.flow).collect();
+    let mut work = net.clone();
+    let mut ndots = 0;
+    add_new_vertex_cap(&mut work, donor_star, 1, &mut ndots);
+    add_st_cap(&mut work, acceptor_star, donor_star, &mut ndots);
+    if ndots < 0 || ndots % 2 != 0 {
+        return ride;
+    }
+    let mut sum = 0;
+    let ok = loop {
+        let delta = balanced_network_search(&mut work);
+        if delta <= 0 {
+            break delta == 0 && 2 * sum >= ndots;
+        }
+        sum += delta;
+    };
+    ride.route = ok;
+    if !ok {
+        return ride;
+    }
+    for (index, edge) in net.edges.iter().enumerate() {
+        let delta = work.edges[index].flow - before[index];
+        if delta == 0 {
+            continue;
+        }
+        let (a, b) = (edge.a as usize, edge.b as usize);
+        match (net.verts[a].kind, net.verts[b].kind) {
+            (Kind::Atom, Kind::Atom) => ride.bonds.push((a.min(b), a.max(b), delta)),
+            (Kind::Atom, star) => {
+                if star == Kind::TGroup {
+                    ride.tg.push((a, delta));
+                } else if star == Kind::CGroup {
+                    ride.cg.push((a, delta));
+                }
+            }
+            (star, Kind::Atom) => {
+                if star == Kind::TGroup {
+                    ride.tg.push((b, delta));
+                } else if star == Kind::CGroup {
+                    ride.cg.push((b, delta));
+                }
+            }
+            _ => {}
+        }
+    }
+    ride
 }
 
 /// bExistsAltPath under ALT_PATH_MODE_CHARGE: no role precheck, the
