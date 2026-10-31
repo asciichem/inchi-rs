@@ -3,8 +3,11 @@
 //! equals the oracle's recording exactly, every layer present in the
 //! oracle's order (formula, /c, /h, /q, /p, stereo, /i), plus the
 //! native InChIKey. Counted skips are the triaged fixtures (dated,
-//! decoded-reason debts) and |charge| > 1 (beyond-M1). No silent
-//! skips; a triaged fixture that passes is a retirement to act on.
+//! decoded-reason debts) and a PER-ATOM |charge| > 1 (the
+//! GetAtomChargeType guard; multi-charge totals — the multi-onium
+//! /q+2..+4 and polyanion /q-2..-4 families — are compared since the
+//! 2026-10-31 census). No silent skips; a triaged fixture that
+//! passes is a retirement to act on.
 
 use std::fs;
 use std::path::PathBuf;

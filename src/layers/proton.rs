@@ -33,7 +33,7 @@ impl LayerEmitter for ProtonLayer {
     }
 
     fn emit(&self, structure: &Structure) -> Result<Option<String>> {
-        standardization::ensure_within_m1(structure)?;
+        standardization::ensure_typable_charges(structure)?;
         if self.shift != 0 {
             // The segment is the full InChI text: `p+1`, `p-1`, ...
             let sign = if self.shift > 0 { '+' } else { '-' };
