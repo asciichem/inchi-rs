@@ -14,6 +14,10 @@ pub struct Engine {
     /// and input charges intact. The AuxInfo reversibility block
     /// echoes this, not the normalized form.
     original: Structure,
+    /// The net proton shift the (DE)PROTONATION standardization and
+    /// the hard group-H removal applied — the `/p` layer's value on
+    /// the pinned path (zero when the layers read the heuristics).
+    proton_shift: i32,
     layers: Vec<Box<dyn LayerEmitter>>,
 }
 
@@ -69,6 +73,7 @@ impl Engine {
         Ok(Engine {
             structure,
             original,
+            proton_shift,
             layers: default_layers(proton_shift),
         })
     }
@@ -76,6 +81,12 @@ impl Engine {
     /// The normalized structure — diagnostics for the triage tools.
     pub fn structure(&self) -> &Structure {
         &self.structure
+    }
+
+    /// The net proton shift the standardization applied (the `/p`
+    /// layer's pinned-path value).
+    pub fn proton_shift(&self) -> i32 {
+        self.proton_shift
     }
 
     /// The derived segments, tagged by layer kind — everything the
@@ -135,7 +146,7 @@ impl Engine {
     /// equivalence classes, charges, and the echo of the submitted
     /// structure (see [`crate::aux`]).
     pub fn aux_string(&self) -> Result<String> {
-        crate::aux::aux_info(&self.original, &self.structure)
+        crate::aux::aux_info(&self.original, &self.structure, self.proton_shift)
     }
 }
 
@@ -279,6 +290,8 @@ mod tests {
         // and must not present a prefix as an InChI.
         let engine = Engine {
             structure: crate::parse_molfile(WATER).expect("parses"),
+            original: Structure::default(),
+            proton_shift: 0,
             layers: vec![Box::new(FixedSegment {
                 order: order::FORMULA,
                 kind: None,
@@ -301,6 +314,8 @@ mod tests {
         // `order()` and join only the segments that emit.
         let engine = Engine {
             structure: Structure::default(),
+            original: Structure::default(),
+            proton_shift: 0,
             layers: vec![
                 Box::new(FixedSegment {
                     order: order::P,

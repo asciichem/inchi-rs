@@ -85,6 +85,10 @@ fn trace_partition(tag: &str, partition: &Partition) {
 struct HfreeCanon {
     final_search: StageOne,
     h_seed: Partition,
+    /// The partition the final H-free walk started from — the rerun's
+    /// `h_seed` when the fix triggered, the first refined partition
+    /// otherwise. The stereo-informed H-free walk starts here too.
+    root: Partition,
 }
 
 fn hfree_canonical(adjacency: &[Vec<usize>], invariants: &[(u16, u16)]) -> HfreeCanon {
@@ -102,9 +106,15 @@ fn hfree_canonical(adjacency: &[Vec<usize>], invariants: &[(u16, u16)]) -> Hfree
     } else {
         first
     };
+    let root = if ranks_changed || !class_ranks_are_contiguous(&first_symmetry) {
+        h_seed.clone()
+    } else {
+        initial.clone()
+    };
     HfreeCanon {
         final_search,
         h_seed,
+        root,
     }
 }
 
@@ -250,6 +260,316 @@ pub fn canonical_ranks_and_symmetry(
         .map(|atom| min_by_root[informed_orbits.representative(atom)])
         .collect();
     (ranks, informed_symmetry)
+}
+
+/// Final canonical rank (1-based) per atom, plus the orbit-minimal
+/// symmetry class per atom — with the terminal compare extended by
+/// the stereo rows (the reference's stereo canonicalization, whose
+/// numbering the aux speaks). Returns the winning pass's ranks and
+/// symmetry plus the inversion verdict: `(main_pairs, inv_pairs,
+/// sign)` where sign is -1 when the inverted pass won (its numbering
+/// was adopted), 0 when the stereo rows came out equal, 1 when the
+/// absolute pass won on rows alone.
+pub fn canonical_ranks_and_symmetry_stereo(
+    adjacency: &[Vec<usize>],
+    invariants: &[(u16, u16)],
+    hydrogens: &[u32],
+    groups: &[(u32, Vec<usize>)],
+    centers: &[(usize, Vec<usize>, u32)],
+) -> (
+    Vec<u32>,
+    Vec<u32>,
+    (Vec<(u32, u32)>, Vec<(u32, u32)>, i32),
+) {
+    let run = |flip: bool| {
+        let (ranks, symmetry) =
+            search_with_stereo(adjacency, invariants, hydrogens, groups, centers, flip);
+        let pairs = super::stereo::terminal_pairs(centers, &ranks, flip);
+        (ranks, symmetry, pairs)
+    };
+    let (abs_ranks, abs_symmetry, abs_pairs) = run(false);
+    let (inv_ranks, inv_symmetry, inv_pairs) = run(true);
+    // The reference's diff: centers' canonical numbers first, then
+    // parities — the first difference carries the sign; equal rows
+    // mean a trivial inversion.
+    let mut sign = 0;
+    for index in 0..abs_pairs.len().min(inv_pairs.len()) {
+        if abs_pairs[index].0 != inv_pairs[index].0 {
+            sign = if inv_pairs[index].0 > abs_pairs[index].0 { 1 } else { -1 };
+            break;
+        }
+        if abs_pairs[index].1 != inv_pairs[index].1 {
+            sign = if inv_pairs[index].1 > abs_pairs[index].1 { 1 } else { -1 };
+            break;
+        }
+    }
+    if sign < 0 {
+        (inv_ranks, inv_symmetry, (inv_pairs, abs_pairs, -1))
+    } else {
+        (abs_ranks, abs_symmetry, (abs_pairs, inv_pairs, sign))
+    }
+}
+
+/// The H-aware search with the stereo rows appended to the terminal
+/// compare (after the connection table, the encoded hydrogens and the
+/// t-group rows). The base flow is mirrored exactly — stage 2 runs
+/// when it would for the stereo-free structure, and otherwise the
+/// H-FREE tree is walked (atom-number candidate order) with the
+/// stereo compare added — so the stereo rows only ever decide ties
+/// the base leaves standing.
+fn search_with_stereo(
+    adjacency: &[Vec<usize>],
+    invariants: &[(u16, u16)],
+    hydrogens: &[u32],
+    groups: &[(u32, Vec<usize>)],
+    centers: &[(usize, Vec<usize>, u32)],
+    flip: bool,
+) -> (Vec<u32>, Vec<u32>) {
+    let n = adjacency.len();
+    let hfree = hfree_canonical(adjacency, invariants);
+    let symmetry = orbit_min_symmetry(&hfree.final_search);
+    let use_stage2 = !groups.is_empty() || !hydrogens_uniform(&symmetry, hydrogens);
+    if !use_stage2 {
+        let mut state = StereoStageOneState {
+            first: None,
+            best: None,
+            orbits: Orbits::new(n),
+        };
+        descend_hfree_stereo(&hfree.root, adjacency, centers, flip, &mut state);
+        let winner = state.best.expect("a discrete partition is always reached");
+        let ranks = (0..n).map(|atom| winner.rank_of(atom)).collect();
+        let mut min_by_root = vec![u32::MAX; n];
+        for atom in 0..n {
+            let root = state.orbits.representative(atom);
+            min_by_root[root] = min_by_root[root].min(winner.rank_of(atom));
+        }
+        let informed_symmetry = (0..n)
+            .map(|atom| min_by_root[state.orbits.representative(atom)])
+            .collect();
+        return (ranks, informed_symmetry);
+    }
+    let aux_invariants: Vec<(u32, u32)> = (0..n)
+        .map(|atom| (symmetry[atom], encoded_hydrogen(hydrogens[atom])))
+        .collect();
+    let mut aux = Partition::initial_pair(&aux_invariants);
+    aux.refine(adjacency);
+    let aux_rank: Vec<u32> = (0..n).map(|atom| aux.rank_of(atom)).collect();
+    let base = &hfree.h_seed;
+    let (informed, informed_orbits) =
+        search_stage_two_stereo(adjacency, base, &aux_rank, hydrogens, groups, centers, flip);
+    let ranks = (0..n).map(|atom| informed.rank_of(atom)).collect();
+    let mut min_by_root = vec![u32::MAX; n];
+    for atom in 0..n {
+        let root = informed_orbits.representative(atom);
+        min_by_root[root] = min_by_root[root].min(informed.rank_of(atom));
+    }
+    let informed_symmetry = (0..n)
+        .map(|atom| min_by_root[informed_orbits.representative(atom)])
+        .collect();
+    (ranks, informed_symmetry)
+}
+
+/// The H-free walk's state (the stereo-informed variant).
+struct StereoStageOneState {
+    first: Option<Partition>,
+    best: Option<Partition>,
+    orbits: Orbits,
+}
+
+fn descend_hfree_stereo(
+    partition: &Partition,
+    adjacency: &[Vec<usize>],
+    centers: &[(usize, Vec<usize>, u32)],
+    flip: bool,
+    state: &mut StereoStageOneState,
+) {
+    match partition.first_nonsingleton_cell() {
+        None => {
+            let table = ConnectionTable::build(partition.ranks(), adjacency);
+            if let Some(first) = &state.first {
+                if table.entries() == ConnectionTable::build(first.ranks(), adjacency).entries() {
+                    for position in 0..adjacency.len() {
+                        state
+                            .orbits
+                            .union(first.at_number()[position], partition.at_number()[position]);
+                    }
+                }
+            } else {
+                state.first = Some(partition.clone());
+            }
+            let better = match &state.best {
+                None => true,
+                Some(best_partition) => {
+                    let best_table = ConnectionTable::build(best_partition.ranks(), adjacency);
+                    match table.compare(&best_table) {
+                        std::cmp::Ordering::Greater => true,
+                        std::cmp::Ordering::Less => false,
+                        std::cmp::Ordering::Equal => {
+                            // The stereo rows keep the reference's own
+                            // (minimizing) ordering: witnessed on the
+                            // dichlorobutane pair, whose table-equal
+                            // terminals the stereo rows split.
+                            super::stereo::terminal_rows(centers, partition.ranks(), flip)
+                                < super::stereo::terminal_rows(
+                                    centers,
+                                    best_partition.ranks(),
+                                    flip,
+                                )
+                        }
+                    }
+                }
+            };
+            if better {
+                state.best = Some(partition.clone());
+            }
+        }
+        Some((start, end)) => {
+            let mut candidates: Vec<usize> = partition.at_number()[start..end].to_vec();
+            candidates.sort_unstable();
+            for v in candidates {
+                let mut branch = partition.clone();
+                branch.individualize(adjacency, v);
+                descend_hfree_stereo(&branch, adjacency, centers, flip, state);
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn search_stage_two_stereo(
+    adjacency: &[Vec<usize>],
+    aux: &Partition,
+    aux_rank: &[u32],
+    hydrogens: &[u32],
+    groups: &[(u32, Vec<usize>)],
+    centers: &[(usize, Vec<usize>, u32)],
+    flip: bool,
+) -> (Partition, Orbits) {
+    let n = adjacency.len();
+    let mut best: Option<Partition> = None;
+    let mut first: Option<Partition> = None;
+    let mut orbits = Orbits::new(n);
+    descend_stereo(
+        aux,
+        adjacency,
+        aux_rank,
+        hydrogens,
+        groups,
+        centers,
+        flip,
+        &mut first,
+        &mut best,
+        &mut orbits,
+    );
+    (
+        best.expect("a discrete partition is always reached"),
+        orbits,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn descend_stereo(
+    partition: &Partition,
+    adjacency: &[Vec<usize>],
+    aux_rank: &[u32],
+    hydrogens: &[u32],
+    groups: &[(u32, Vec<usize>)],
+    centers: &[(usize, Vec<usize>, u32)],
+    flip: bool,
+    first: &mut Option<Partition>,
+    best: &mut Option<Partition>,
+    orbits: &mut Orbits,
+) {
+    let cell = match partition.first_nonsingleton_cell() {
+        Some(span) => span,
+        None => {
+            let ranks = partition.ranks();
+            let table = ConnectionTable::build(ranks, adjacency);
+            let matches = |other: &Partition| {
+                table.entries() == ConnectionTable::build(other.ranks(), adjacency).entries()
+                    && (0..adjacency.len()).all(|position| {
+                        hydrogens[other.at_number()[position]]
+                            == hydrogens[partition.at_number()[position]]
+                    })
+            };
+            if let Some(first_partition) = first {
+                if matches(first_partition) {
+                    for position in 0..adjacency.len() {
+                        orbits.union(
+                            first_partition.at_number()[position],
+                            partition.at_number()[position],
+                        );
+                    }
+                }
+            } else {
+                *first = Some(partition.clone());
+            }
+            let counts = |p: &Partition| -> Vec<u32> {
+                (0..adjacency.len())
+                    .map(|atom| encoded_hydrogen(hydrogens[p.at_number()[atom]]))
+                    .collect()
+            };
+            let group_rows = |p: &Partition| -> Vec<(u32, Vec<u32>)> {
+                let ranks = p.ranks();
+                groups
+                    .iter()
+                    .map(|(count, members)| {
+                        let mut member_ranks: Vec<u32> = members.iter().map(|&m| ranks[m]).collect();
+                        member_ranks.sort_unstable();
+                        (*count, member_ranks)
+                    })
+                    .collect()
+            };
+            let stereo_rows = |p: &Partition| super::stereo::terminal_rows(centers, p.ranks(), flip);
+            let better = match &best {
+                None => true,
+                Some(best_partition) => {
+                    let best_table = ConnectionTable::build(best_partition.ranks(), adjacency);
+                    match table.compare(&best_table) {
+                        std::cmp::Ordering::Greater => true,
+                        std::cmp::Ordering::Less => false,
+                        std::cmp::Ordering::Equal => {
+                            match counts(partition).cmp(&counts(best_partition)) {
+                                std::cmp::Ordering::Less => true,
+                                std::cmp::Ordering::Greater => false,
+                                std::cmp::Ordering::Equal => {
+                                    match group_rows(partition).cmp(&group_rows(best_partition)) {
+                                        std::cmp::Ordering::Greater => true,
+                                        std::cmp::Ordering::Less => false,
+                                        std::cmp::Ordering::Equal => {
+                                            // The stereo rows keep the
+                                            // reference's own (minimizing)
+                                            // ordering: witnessed on the
+                                            // dichlorobutane pair, whose
+                                            // table-equal terminals the
+                                            // stereo rows split.
+                                            stereo_rows(partition) < stereo_rows(best_partition)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            };
+            if better {
+                *best = Some(partition.clone());
+            }
+            return;
+        }
+    };
+    let mut candidates: Vec<usize> = partition.at_number()[cell.0..cell.1].to_vec();
+    candidates.sort_by_key(|&atom| (aux_rank[atom], atom));
+    for &v in &candidates {
+        if orbits.representative(v) != v {
+            continue;
+        }
+        let mut branch = partition.clone();
+        branch.individualize(adjacency, v);
+        descend_stereo(
+            &branch, adjacency, aux_rank, hydrogens, groups, centers, flip, first, best, orbits,
+        );
+    }
 }
 
 /// Final canonical rank (1-based) per atom. The mobile groups (rank

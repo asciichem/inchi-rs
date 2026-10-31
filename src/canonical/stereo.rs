@@ -60,6 +60,11 @@ impl Center {
 /// alanine pair.
 const PARITY_CONSTANT: u32 = 1;
 
+/// The absolute parity convention the AUX stereo rows speak (the
+/// reference's t_parity): witnessed against the instrumented oracle —
+/// l-alanine's absolute pass reads parity 2, its inverted pass 1.
+const AUX_PARITY_CONSTANT: u32 = 0;
+
 /// The derived segments in `/t`, `/m`, `/s` order; empty when the
 /// structure carries no wedge parity at all.
 pub fn segments(
@@ -216,6 +221,96 @@ fn wedged_centers(structure: &Structure) -> Vec<(usize, usize, u32)> {
         out.push((from, bond_index, down));
     }
     out.sort();
+    out
+}
+
+/// The wedge-defined centers with their geometry parity bit and heavy
+/// ligands (neighbor order) — the per-terminal stereo-row inputs the
+/// aux numbering's informed search compares. The geometry bit is
+/// terminal-independent; only the ligand permutation composes with
+/// the canonical ranks.
+pub fn center_inputs(
+    structure: &Structure,
+    hydrogens: &[u32],
+    ranks: &[u32],
+) -> Vec<(usize, Vec<usize>, u32)> {
+    let wedged = wedged_centers(structure);
+    if wedged.is_empty() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    for &(atom, bond_index, down) in &wedged {
+        let Some(center) = candidates(structure, hydrogens, ranks)
+            .into_iter()
+            .find(|c| c.atom == atom)
+        else {
+            continue;
+        };
+        let ligands = center.heavy_by_neighbor_order();
+        let Some(bit) = atom_parity(structure, &ligands, bond_index, down) else {
+            continue;
+        };
+        out.push((atom, ligands, bit));
+    }
+    out.sort_by_key(|&(atom, _, _)| ranks[atom]);
+    out
+}
+
+/// The (center rank, parity) pairs of [`terminal_rows`] — the compare
+/// the reference's CopyLinearCTStereoToINChIStereo diff runs.
+pub fn terminal_pairs(centers: &[(usize, Vec<usize>, u32)], ranks: &[u32], flip: bool) -> Vec<(u32, u32)> {
+    let mut ordered: Vec<&(usize, Vec<usize>, u32)> = centers
+        .iter()
+        .filter(|(atom, _, _)| ranks[*atom] > 0)
+        .collect();
+    ordered.sort_by_key(|&&(atom, _, _)| ranks[atom]);
+    let mut out = Vec::new();
+    for &(atom, ref ligands, bit) in ordered {
+        let mut sequence: Vec<(usize, u32)> = ligands
+            .iter()
+            .enumerate()
+            .map(|(position, &ligand)| (position, ranks[ligand]))
+            .collect();
+        sequence.sort_by_key(|&(_, rank)| rank);
+        let perm = permutation_parity(sequence.into_iter().map(|(position, _)| position).collect());
+        let parity = 2 - ((bit ^ perm ^ AUX_PARITY_CONSTANT) ^ u32::from(flip));
+        out.push((ranks[atom], parity));
+    }
+    out
+}
+
+/// One terminal's stereo rows over `ranks`: per center (ascending
+/// canonical number) the center's rank, the parity number (1 = odd,
+/// 2 = even — the geometry bit composed with the ligand permutation
+/// and the convention constant, flipped once for the inverted pass),
+/// then the ligand ranks ascending. The rows extend the terminal
+/// compare the way the reference's LinearCTStereoCarb section does.
+pub fn terminal_rows(
+    centers: &[(usize, Vec<usize>, u32)],
+    ranks: &[u32],
+    flip: bool,
+) -> Vec<u32> {
+    let mut out = Vec::new();
+    let mut ordered: Vec<&(usize, Vec<usize>, u32)> = centers
+        .iter()
+        .filter(|(atom, _, _)| ranks[*atom] > 0)
+        .collect();
+    ordered.sort_by_key(|&&(atom, _, _)| ranks[atom]);
+    for &(atom, ref ligands, bit) in ordered {
+        let mut sequence: Vec<(usize, u32)> = ligands
+            .iter()
+            .enumerate()
+            .map(|(position, &ligand)| (position, ranks[ligand]))
+            .collect();
+        sequence.sort_by_key(|&(_, rank)| rank);
+        let perm = permutation_parity(sequence.into_iter().map(|(position, _)| position).collect());
+        let parity = 2 - ((bit ^ perm ^ AUX_PARITY_CONSTANT) ^ u32::from(flip));
+        out.push(ranks[atom]);
+        out.push(parity);
+        let mut ligand_ranks: Vec<u32> = ligands.iter().map(|&l| ranks[l]).collect();
+        ligand_ranks.sort_unstable();
+        out.extend(ligand_ranks);
+    }
     out
 }
 
