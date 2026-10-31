@@ -60,6 +60,7 @@ mod tests {
             positions: Default::default(),
             isotopic_h: Default::default(),
             protons_hard_moved: false,
+            ride_marks: Vec::new(),
         };
         assert_eq!(ChargeLayer.emit(&s).unwrap(), Some("q+1".to_string()));
     }
@@ -76,6 +77,7 @@ mod tests {
             positions: Default::default(),
             isotopic_h: Default::default(),
             protons_hard_moved: false,
+            ride_marks: Vec::new(),
         };
         assert_eq!(ChargeLayer.emit(&s).unwrap(), Some("q-1".to_string()));
 
@@ -86,6 +88,7 @@ mod tests {
             positions: Default::default(),
             isotopic_h: Default::default(),
             protons_hard_moved: false,
+            ride_marks: Vec::new(),
         };
         assert_eq!(ChargeLayer.emit(&s).unwrap(), Some("q-1".to_string()));
     }
@@ -106,6 +109,7 @@ mod tests {
             positions: Default::default(),
             isotopic_h: Default::default(),
             protons_hard_moved: false,
+            ride_marks: Vec::new(),
         };
         standardization::normalize_internal_salts(&mut s);
         assert!(s.atoms.iter().all(|atom| atom.charge == 0));
@@ -135,6 +139,7 @@ mod tests {
             positions: Default::default(),
             isotopic_h: Default::default(),
             protons_hard_moved: false,
+            ride_marks: Vec::new(),
         };
         standardization::normalize_internal_salts(&mut s);
         assert_eq!(s.atoms[0].charge, 1);

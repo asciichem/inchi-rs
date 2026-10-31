@@ -322,6 +322,10 @@ struct Context<'a> {
     /// the (DE)PROTONATION-standardized state — a charge −1 counts
     /// as a mobile unit exactly where no riding hydrogen stands.
     charge_units: Vec<u32>,
+    /// Per-bond mobility marks the hard proton ride left (the
+    /// reference's ALT12NS / ALTERN|TRIPLE bond types); zero where
+    /// the bond carries none.
+    ride_marks: Vec<u8>,
 }
 
 impl<'a> Context<'a> {
@@ -353,6 +357,12 @@ impl<'a> Context<'a> {
         }
         let rings = ring_systems(structure);
         let forbidden = forbidden_edges(structure, &neighbors, &bond_index);
+        let mut ride_marks = vec![0u8; structure.bonds.len()];
+        for (index, &mark) in structure.ride_marks.iter().enumerate() {
+            if index < ride_marks.len() {
+                ride_marks[index] = mark;
+            }
+        }
         Context {
             structure,
             hydrogens,
@@ -363,6 +373,7 @@ impl<'a> Context<'a> {
             rings,
             forbidden,
             charge_units,
+            ride_marks,
         }
     }
 
@@ -420,7 +431,10 @@ impl<'a> Context<'a> {
     /// The reference reads `bond_type & ~BOND_MARK_ALL`, and
     /// SetTautomericBonds REPLACES the marked bond's type with
     /// BOND_TAUTOM — a registered bond reads TAUTOM, its original
-    /// order gone. A perceived-aromatic bond reads BOND_ALTERN.
+    /// order gone. A perceived-aromatic bond reads BOND_ALTERN. A
+    /// ride-moved bond reads the mobility mark the ride persisted
+    /// (ALT12NS "1 or 2" / ALTERN|TRIPLE "2 or 3") until a
+    /// registration replaces it.
     fn bond_type(&self, state: &Registration, a: usize, b: usize) -> BondType {
         let &index = self
             .bond_index
@@ -431,6 +445,11 @@ impl<'a> Context<'a> {
         }
         if state.altered.contains(&index) || self.aromatic.contains(&index) {
             return BondType::Altern;
+        }
+        match self.ride_marks[index] {
+            9 => return BondType::Alt12ns,
+            7 => return BondType::Alt23,
+            _ => {}
         }
         match self.structure.bonds[index].2 {
             2 => BondType::Double,
@@ -508,7 +527,10 @@ impl<'a> Context<'a> {
                     .map(|&(neigh, _)| {
                         matches!(
                             self.bond_type(state, atom, neigh),
-                            BondType::Single | BondType::Altern | BondType::Tautom
+                            BondType::Single
+                                | BondType::Altern
+                                | BondType::Tautom
+                                | BondType::Alt12ns
                         )
                     })
                     .collect()
@@ -607,7 +629,10 @@ impl<'a> Context<'a> {
                     .map(|&(neigh, _)| {
                         matches!(
                             self.bond_type(state, atom, neigh),
-                            BondType::Single | BondType::Altern | BondType::Tautom
+                            BondType::Single
+                                | BondType::Altern
+                                | BondType::Tautom
+                                | BondType::Alt12ns
                         )
                     })
                     .collect()
@@ -666,7 +691,10 @@ impl<'a> Context<'a> {
                     .map(|&(neigh, _)| {
                         matches!(
                             self.bond_type(state, atom, neigh),
-                            BondType::Single | BondType::Altern | BondType::Tautom
+                            BondType::Single
+                                | BondType::Altern
+                                | BondType::Tautom
+                                | BondType::Alt12ns
                         )
                     })
                     .collect()
@@ -1126,7 +1154,7 @@ fn alternation_round(context: &Context, state: &mut Registration) -> bool {
                 .map(|&(neigh, _)| {
                     matches!(
                         context.bond_type(state, atom, neigh),
-                        BondType::Single | BondType::Altern | BondType::Tautom
+                        BondType::Single | BondType::Altern | BondType::Tautom | BondType::Alt12ns
                     )
                 })
                 .collect()
@@ -1276,9 +1304,15 @@ fn other_salt_charge_type(context: &Context, state: &Registration, atom: usize) 
         let bond = context.bond_type(state, atom, centerpoint);
         let bond_allows = match role {
             Role::Acceptor => {
-                matches!(bond, BondType::Double | BondType::Altern | BondType::Tautom)
+                matches!(
+                    bond,
+                    BondType::Double | BondType::Altern | BondType::Tautom | BondType::Alt12ns
+                )
             }
-            Role::Donor => matches!(bond, BondType::Single | BondType::Altern | BondType::Tautom),
+            Role::Donor => matches!(
+                bond,
+                BondType::Single | BondType::Altern | BondType::Tautom | BondType::Alt12ns
+            ),
         };
         let center_capable = context.bond_sum2[centerpoint] / 2
             > context.neighbors[centerpoint].len() as i32
@@ -1647,7 +1681,7 @@ fn registration_round(context: &Context, state: &mut Registration) -> bool {
             let anchor_bond = context.bond_type(state, start, centerpoint);
             if !matches!(
                 anchor_bond,
-                BondType::Double | BondType::Altern | BondType::Tautom
+                BondType::Double | BondType::Altern | BondType::Tautom | BondType::Alt12ns
             ) {
                 continue;
             }
@@ -1666,7 +1700,9 @@ fn registration_round(context: &Context, state: &mut Registration) -> bool {
                 let bond = context.bond_type(state, centerpoint, endpoint);
                 let non_taut = match bond {
                     BondType::Single | BondType::Double => true,
-                    BondType::Triple => continue,
+                    // "2 or 3" — the ride's mark on a demoted triple —
+                    // matches no salt role and no template arm.
+                    BondType::Triple | BondType::Alt23 => continue,
                     _ => false,
                 };
                 let Some(arithmetic) = context.endpoint(state, endpoint) else {
@@ -1945,7 +1981,7 @@ fn walk_round(context: &Context, state: &mut Registration) -> bool {
             }
             if !matches!(
                 context.bond_type(state, i1, i2),
-                BondType::Single | BondType::Tautom | BondType::Altern
+                BondType::Single | BondType::Tautom | BondType::Altern | BondType::Alt12ns
             ) {
                 continue;
             }
@@ -2001,7 +2037,7 @@ fn walk_round(context: &Context, state: &mut Registration) -> bool {
             }
             if !matches!(
                 context.bond_type(state, i1, i2),
-                BondType::Single | BondType::Tautom | BondType::Altern
+                BondType::Single | BondType::Tautom | BondType::Altern | BondType::Alt12ns
             ) {
                 continue;
             }
@@ -2018,7 +2054,11 @@ fn walk_round(context: &Context, state: &mut Registration) -> bool {
                 let b1 = context.bond_type(state, i1, endpoint1);
                 if !matches!(
                     b1,
-                    BondType::Single | BondType::Double | BondType::Tautom | BondType::Altern
+                    BondType::Single
+                        | BondType::Double
+                        | BondType::Tautom
+                        | BondType::Altern
+                        | BondType::Alt12ns
                 ) {
                     continue;
                 }
@@ -2035,7 +2075,11 @@ fn walk_round(context: &Context, state: &mut Registration) -> bool {
                     let b2 = context.bond_type(state, i2, endpoint2);
                     if !matches!(
                         b2,
-                        BondType::Single | BondType::Double | BondType::Tautom | BondType::Altern
+                        BondType::Single
+                            | BondType::Double
+                            | BondType::Tautom
+                            | BondType::Altern
+                            | BondType::Alt12ns
                     ) {
                         continue;
                     }
@@ -2095,6 +2139,9 @@ fn walk_round(context: &Context, state: &mut Registration) -> bool {
 
 /// The reference bond classes the templates distinguish. TAUTOM is a
 /// bond a previous registration replaced; ALTERN is an aromatic bond.
+/// ALT12NS ("1 or 2", the ride's mark 9) and ALT23 ("2 or 3", mark
+/// 7) are the mobility marks a hard proton ride leaves: the first
+/// matches either salt role, the second neither.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum BondType {
     Single,
@@ -2102,6 +2149,8 @@ enum BondType {
     Triple,
     Altern,
     Tautom,
+    Alt12ns,
+    Alt23,
 }
 
 impl<'a> Context<'a> {
@@ -2119,7 +2168,7 @@ impl<'a> Context<'a> {
 /// non-single/non-double in the wild-card case, which the callers
 /// treat as "no pattern constraint".)
 fn are_alt_bonds(bonds: &[BondType]) -> Option<BondType> {
-    if bonds.len() < 2 || bonds[0] == BondType::Triple {
+    if bonds.len() < 2 || matches!(bonds[0], BondType::Triple | BondType::Alt23) {
         return None;
     }
     let mut expected = match bonds[0] {
@@ -2128,7 +2177,10 @@ fn are_alt_bonds(bonds: &[BondType]) -> Option<BondType> {
         _ => None,
     };
     for &bond in &bonds[1..] {
-        let wildcard = matches!(bond, BondType::Altern | BondType::Tautom);
+        let wildcard = matches!(
+            bond,
+            BondType::Altern | BondType::Tautom | BondType::Alt12ns
+        );
         if let Some(want) = expected {
             if bond == want || wildcard {
                 expected = Some(if want == BondType::Single {
@@ -2169,7 +2221,7 @@ fn mark_path_bonds(
     for (step, bond) in path.windows(2).zip(bonds) {
         if matches!(
             *bond,
-            BondType::Single | BondType::Double | BondType::Altern
+            BondType::Single | BondType::Double | BondType::Altern | BondType::Alt12ns
         ) {
             if let Some(&index) = context
                 .bond_index
@@ -2184,7 +2236,7 @@ fn mark_path_bonds(
         let first = path[0];
         if matches!(
             bonds[bonds.len() - 1],
-            BondType::Single | BondType::Double | BondType::Altern
+            BondType::Single | BondType::Double | BondType::Altern | BondType::Alt12ns
         ) {
             if let Some(&index) = context.bond_index.get(&(first.min(last), first.max(last))) {
                 marked |= state.marks.insert(index);
@@ -2334,7 +2386,11 @@ fn check_6memb_ring(
     let exo = context.bond_type(state, mid, o_at);
     if !matches!(
         exo,
-        BondType::Single | BondType::Double | BondType::Tautom | BondType::Altern
+        BondType::Single
+            | BondType::Double
+            | BondType::Tautom
+            | BondType::Altern
+            | BondType::Alt12ns
     ) {
         return false;
     }

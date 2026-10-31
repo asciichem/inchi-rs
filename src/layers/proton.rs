@@ -68,6 +68,7 @@ mod tests {
             positions: Default::default(),
             isotopic_h: Default::default(),
             protons_hard_moved: false,
+            ride_marks: Vec::new(),
         };
         assert_eq!(
             ProtonLayer::default().emit(&s).unwrap(),
@@ -85,6 +86,7 @@ mod tests {
             positions: Default::default(),
             isotopic_h: Default::default(),
             protons_hard_moved: false,
+            ride_marks: Vec::new(),
         };
         assert_eq!(
             ProtonLayer::default().emit(&s).unwrap(),
@@ -109,6 +111,7 @@ mod tests {
             positions: Default::default(),
             isotopic_h: Default::default(),
             protons_hard_moved: false,
+            ride_marks: Vec::new(),
         };
         assert_eq!(ProtonLayer::default().emit(&s).unwrap(), None);
     }
@@ -132,6 +135,7 @@ mod tests {
             positions: Default::default(),
             isotopic_h: Default::default(),
             protons_hard_moved: false,
+            ride_marks: Vec::new(),
         };
         assert_eq!(ProtonLayer::default().emit(&s).unwrap(), None);
 
@@ -148,6 +152,7 @@ mod tests {
             positions: Default::default(),
             isotopic_h: Default::default(),
             protons_hard_moved: false,
+            ride_marks: Vec::new(),
         };
         assert_eq!(ProtonLayer::default().emit(&s).unwrap(), None);
     }
@@ -168,6 +173,7 @@ mod tests {
             positions: Default::default(),
             isotopic_h: Default::default(),
             protons_hard_moved: false,
+            ride_marks: Vec::new(),
         };
         assert_eq!(
             ProtonLayer::default().emit(&s).unwrap(),
@@ -186,6 +192,7 @@ mod tests {
             positions: Default::default(),
             isotopic_h: Default::default(),
             protons_hard_moved: false,
+            ride_marks: Vec::new(),
         };
         assert_eq!(
             ProtonLayer::default().emit(&s).unwrap(),
@@ -210,6 +217,7 @@ mod tests {
             positions: Default::default(),
             isotopic_h: Default::default(),
             protons_hard_moved: false,
+            ride_marks: Vec::new(),
         };
         let hydrogens = s.hydrogens();
         assert_eq!(hydrogens[2], 0);
