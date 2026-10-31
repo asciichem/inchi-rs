@@ -1,4 +1,4 @@
-use inchi_rs::Engine;
+use chemomer::Engine;
 use std::fs;
 
 fn main() {
@@ -30,10 +30,10 @@ fn main() {
                 Err(_) => continue,
             };
             let s = engine.structure();
-            let counts = inchi_rs::layers::standardization::adjusted_hydrogens(s);
-            let ranks = inchi_rs::layers::hydrogen::canonical_ranks_for(s);
-            let groups = inchi_rs::canonical::tautomer::mobile_groups(s, &counts, &ranks);
-            let real_h = |g: &inchi_rs::canonical::tautomer::MobileGroup| g.count > g.charge;
+            let counts = chemomer::layers::standardization::adjusted_hydrogens(s);
+            let ranks = chemomer::layers::hydrogen::canonical_ranks_for(s);
+            let groups = chemomer::canonical::tautomer::mobile_groups(s, &counts, &ranks);
+            let real_h = |g: &chemomer::canonical::tautomer::MobileGroup| g.count > g.charge;
             let taut = groups.iter().any(|g| real_h(g));
             let minus = groups.iter().any(|g| real_h(g) && g.charge > 0);
             let hard = s.protons_hard_moved;
@@ -41,7 +41,7 @@ fn main() {
             let has_p = if pinned {
                 engine.proton_shift() != 0
             } else {
-                inchi_rs::layers::standardization::charge_plan(s).p != 0
+                chemomer::layers::standardization::charge_plan(s).p != 0
             };
             let iso_mob = exchangeable(s, &counts);
             let bit0 = (taut || has_p || iso_mob) as i32;
@@ -59,7 +59,7 @@ fn main() {
     println!("census: {mism} mismatches of {total}");
 }
 
-fn exchangeable(s: &inchi_rs::graph::Structure, counts: &[u32]) -> bool {
+fn exchangeable(s: &chemomer::graph::Structure, counts: &[u32]) -> bool {
     let isotopic = !s.isotopic_h.is_empty() || s.atoms.iter().any(|a| a.isotope != 0);
     isotopic
         && s.atoms
