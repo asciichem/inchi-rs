@@ -18,7 +18,9 @@ fn main() {
         let cases: Vec<serde_json::Value> =
             serde_json::from_str(&fs::read_to_string(&file).expect("read")).expect("json");
         for case in cases {
-            let Some(aux) = case["aux"].as_str() else { continue };
+            let Some(aux) = case["aux"].as_str() else {
+                continue;
+            };
             let oracle_norm: i32 = aux
                 .split("AuxInfo=1/")
                 .nth(1)
@@ -46,7 +48,11 @@ fn main() {
             let iso_mob = exchangeable(s, &counts);
             let bit0 = (taut || has_p || iso_mob) as i32;
             let salt = ((minus && !hard) || (!minus && hard && taut)) as i32;
-            let pred = if bit0 == 0 { 0 } else { bit0 + salt + 4 * hard as i32 };
+            let pred = if bit0 == 0 {
+                0
+            } else {
+                bit0 + salt + 4 * hard as i32
+            };
             total += 1;
             if pred != oracle_norm {
                 mism += 1;

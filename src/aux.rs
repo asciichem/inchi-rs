@@ -89,8 +89,7 @@ pub fn aux_info(original: &Structure, working: &Structure, proton_shift: i32) ->
             let flip_pairs = main_pairs.len() == inv_pairs.len()
                 && main_pairs.iter().zip(&inv_pairs).all(|(main, inv)| {
                     main.0 == inv.0
-                        && (main.1 + inv.1 == 3
-                            || (!matches!(main.1, 1 | 2) && main.1 == inv.1))
+                        && (main.1 + inv.1 == 3 || (!matches!(main.1, 1 | 2) && main.1 == inv.1))
                 });
             if flip_pairs {
                 inverted_block = "/it:im".to_string();
@@ -155,7 +154,16 @@ pub fn aux_info(original: &Structure, working: &Structure, proton_shift: i32) ->
         out.push_str("/E:");
         let text: Vec<String> = equivalents
             .iter()
-            .map(|members| format!("({})", members.iter().map(|m| m.to_string()).collect::<Vec<_>>().join(",")))
+            .map(|members| {
+                format!(
+                    "({})",
+                    members
+                        .iter()
+                        .map(|m| m.to_string())
+                        .collect::<Vec<_>>()
+                        .join(",")
+                )
+            })
             .collect();
         out.push_str(&text.join(""));
     }
@@ -201,7 +209,11 @@ pub fn aux_info(original: &Structure, working: &Structure, proton_shift: i32) ->
                 .map(|members| {
                     format!(
                         "({})",
-                        members.iter().map(|m| m.to_string()).collect::<Vec<_>>().join(",")
+                        members
+                            .iter()
+                            .map(|m| m.to_string())
+                            .collect::<Vec<_>>()
+                            .join(",")
                     )
                 })
                 .collect();
@@ -301,12 +313,14 @@ pub fn aux_info(original: &Structure, working: &Structure, proton_shift: i32) ->
 /// counts the heteroatom and sets `nNumIsotopicEndpoints` above one;
 /// isotopes riding carbon — toluene-d3's methyl — never qualify).
 fn exchangeable_isotopic_h(structure: &Structure, counts: &[u32]) -> bool {
-    let isotopic = !structure.isotopic_h.is_empty()
-        || structure.atoms.iter().any(|atom| atom.isotope != 0);
+    let isotopic =
+        !structure.isotopic_h.is_empty() || structure.atoms.iter().any(|atom| atom.isotope != 0);
     isotopic
-        && structure.atoms.iter().enumerate().any(|(index, atom)| {
-            atom.element != "C" && atom.element != "H" && counts[index] > 0
-        })
+        && structure
+            .atoms
+            .iter()
+            .enumerate()
+            .any(|(index, atom)| atom.element != "C" && atom.element != "H" && counts[index] > 0)
 }
 
 /// The charges the salt normalization zeroes but the reference's

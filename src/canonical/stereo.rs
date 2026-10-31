@@ -258,7 +258,11 @@ pub fn center_inputs(
 
 /// The (center rank, parity) pairs of [`terminal_rows`] — the compare
 /// the reference's CopyLinearCTStereoToINChIStereo diff runs.
-pub fn terminal_pairs(centers: &[(usize, Vec<usize>, u32)], ranks: &[u32], flip: bool) -> Vec<(u32, u32)> {
+pub fn terminal_pairs(
+    centers: &[(usize, Vec<usize>, u32)],
+    ranks: &[u32],
+    flip: bool,
+) -> Vec<(u32, u32)> {
     let mut ordered: Vec<&(usize, Vec<usize>, u32)> = centers
         .iter()
         .filter(|(atom, _, _)| ranks[*atom] > 0)
@@ -285,11 +289,7 @@ pub fn terminal_pairs(centers: &[(usize, Vec<usize>, u32)], ranks: &[u32], flip:
 /// and the convention constant, flipped once for the inverted pass),
 /// then the ligand ranks ascending. The rows extend the terminal
 /// compare the way the reference's LinearCTStereoCarb section does.
-pub fn terminal_rows(
-    centers: &[(usize, Vec<usize>, u32)],
-    ranks: &[u32],
-    flip: bool,
-) -> Vec<u32> {
+pub fn terminal_rows(centers: &[(usize, Vec<usize>, u32)], ranks: &[u32], flip: bool) -> Vec<u32> {
     let mut out = Vec::new();
     let mut ordered: Vec<&(usize, Vec<usize>, u32)> = centers
         .iter()
