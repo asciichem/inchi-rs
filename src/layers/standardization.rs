@@ -10,24 +10,51 @@
 //! BONDED opposite-charge pair annihilates (the terminal ion-pair
 //! preprocessing — nitro, N-oxide); a distant zwitterion pair keeps
 //! its charges and hides them in the identifier on its own.
+//!
+//! The gate (2026-10-31) bounds PER-ATOM charges at ±1 — the
+//! reference's GetAtomChargeType guard — not the structure total:
+//! the multi-charge families (multi-onium `/q+2`/`/q+4`, polyanions
+//! `/q-2`/`/q-3`/`/q-4`) ride the declined-(DE)PROTONATION pinned
+//! path, whose `ATTOT_TOT_CHARGE` quota arithmetic never assumed a
+//! ±1 total.
 
 use crate::canonical::tautomer;
 use crate::error::{err, Result};
 use crate::graph::{AtomRecord, Structure};
 
-/// The shared gate message: |charge| > 1 structures need the M3
-/// mobile-H rules and are beyond the M1 layers' authority.
+/// The shared gate message: a per-atom charge beyond ±1 is untypable
+/// for the M1 layers (the reference's GetAtomChargeType refuses to
+/// class the atom — ATT_NONE) and the structure is beyond their
+/// authority. The TOTAL charge is deliberately unbounded.
 pub const BEYOND_M1: &str = "beyond the ±1 corpus gate";
 
-/// Rejects structures whose |charge| exceeds the M1 gate — the ONE
-/// place the policy lives; formula and proton layers both call it so
-/// neither can silently half-decide a multi-charge structure.
-pub fn ensure_within_m1(structure: &Structure) -> Result<()> {
-    let charge = structure.total_charge();
-    if charge.abs() > 1 {
+/// The charge-typability gate — the ONE place the policy lives;
+/// formula, proton, charge, isotope and hydrogen layers all call it
+/// so none can silently half-decide an untypable structure.
+///
+/// The guard is the reference's GetAtomChargeType guard
+/// (ichi_bns.c): a PER-ATOM charge beyond ±1 is untypable — the C
+/// function exits without a class and every charge-exchange quota
+/// skips the atom — so no M1 layer may decide such a structure. The
+/// TOTAL is deliberately unbounded: the reference's quota arithmetic
+/// sums ATTOT_TOT_CHARGE as a plain signed total, and the corpus
+/// records the multi-charge families assembling byte-identically
+/// through the declined-(DE)PROTONATION pinned path — the double
+/// quaternary ammonium `/q+2` (breadth-433), the tetrakis-onium
+/// `/q+4` (breadth3-27) and the polyanions `/q-2` `/q-3` `/q-4`
+/// (breadth-1072, breadth2-1593, breadth2-1076). The former
+/// `|total| > 1` rejection was the M1-era corpus scope, not a rule
+/// of the reference: the 2026-10-31 census of the 29 recorded-but-
+/// uncounted fixtures found per-atom `|charge|` = 1 on every one.
+pub fn ensure_typable_charges(structure: &Structure) -> Result<()> {
+    if let Some((index, charge)) = structure
+        .atoms
+        .iter()
+        .enumerate()
+        .find_map(|(index, atom)| (atom.charge.abs() > 1).then_some((index, atom.charge)))
+    {
         return err(format!(
-            "standardization: |charge| = {} {BEYOND_M1}",
-            charge.abs()
+            "standardization: atom {index} charge {charge:+} {BEYOND_M1}"
         ));
     }
     Ok(())
@@ -434,5 +461,52 @@ mod tests {
         normalize_internal_salts(&mut s);
         assert_eq!(s.atoms[0].charge, 1);
         assert_eq!(s.atoms[4].charge, -1);
+    }
+
+    #[test]
+    fn multi_onium_totals_assemble_from_the_pinned_state() {
+        // The (DE)PROTONATION declined on the double quaternary N+
+        // (no removable proton anywhere): the pinned total emits
+        // /q+2 with no /p (the identity/breadth-433 class — the
+        // 2026-10-31 census). The total is unbounded; the gate is
+        // per-atom.
+        let mut s = structure(
+            vec![
+                atom("N", 1, 0),
+                atom("C", 0, 0),
+                atom("C", 0, 0),
+                atom("C", 0, 0),
+                atom("N", 1, 0),
+                atom("C", 0, 0),
+                atom("C", 0, 0),
+                atom("C", 0, 0),
+            ],
+            vec![
+                (0, 1, 1),
+                (0, 2, 1),
+                (0, 3, 1),
+                (4, 5, 1),
+                (4, 6, 1),
+                (4, 7, 1),
+            ],
+        );
+        for record in s.atoms.iter_mut() {
+            record.h_pinned = true;
+        }
+        assert_eq!(charge_layer(&s), Some("q+2".to_string()));
+        assert_eq!(proton_layer(&s), None);
+        assert_eq!(hydrogen_adjustment(&s), 0);
+    }
+
+    #[test]
+    fn per_atom_charges_beyond_plus_minus_one_stay_beyond() {
+        // GetAtomChargeType's guard: a per-atom |charge| > 1 is
+        // untypable (ATT_NONE); the polyanion totals — every atom
+        // within ±1 — stay inside the gate (breadth-1072 emits
+        // /q-2 through the pinned path).
+        let pair = structure(vec![atom("O", -1, 0), atom("O", -1, 0)], vec![(0, 1, 1)]);
+        assert!(ensure_typable_charges(&pair).is_ok());
+        let dianion = structure(vec![atom("O", -2, 0), atom("C", 0, 3)], vec![(0, 1, 1)]);
+        assert!(ensure_typable_charges(&dianion).is_err());
     }
 }

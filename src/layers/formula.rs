@@ -24,7 +24,7 @@ impl LayerEmitter for FormulaLayer {
     }
 
     fn emit(&self, structure: &Structure) -> Result<Option<String>> {
-        standardization::ensure_within_m1(structure)?;
+        standardization::ensure_typable_charges(structure)?;
         let mut composition = structure.composition();
         let adjustment = standardization::hydrogen_adjustment(structure);
         if adjustment != 0 {
@@ -147,12 +147,12 @@ mod tests {
 
     #[test]
     fn beyond_the_plus_minus_1_gate_is_rejected() {
-        let mut o1 = atom("O");
-        o1.charge = -1;
-        let mut o2 = atom("O");
-        o2.charge = -1;
-        let s_atom = atom("S");
-        let s = structure(vec![o1, s_atom, o2, atom("O"), atom("O")], vec![]);
+        // The gate bounds PER-ATOM charges (GetAtomChargeType's
+        // guard); multi-charge TOTALS (all atoms within ±1) assemble
+        // through the pinned path.
+        let mut o = atom("O");
+        o.charge = -2;
+        let s = structure(vec![o, atom("C")], vec![(0, 1, 1)]);
         let error = FormulaLayer.emit(&s).unwrap_err();
         assert!(error.message().contains("beyond the ±1 corpus gate"));
     }

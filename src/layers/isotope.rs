@@ -28,7 +28,7 @@ impl LayerEmitter for IsotopeLayer {
     }
 
     fn emit(&self, structure: &Structure) -> Result<Option<String>> {
-        standardization::ensure_within_m1(structure)?;
+        standardization::ensure_typable_charges(structure)?;
         let mut entries: Vec<(u32, String)> = Vec::new();
         let mut mobile_d = 0u32;
         let mut mobile_t = 0u32;

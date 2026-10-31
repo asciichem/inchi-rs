@@ -55,7 +55,7 @@ impl LayerEmitter for HydrogenLayer {
     }
 
     fn emit(&self, structure: &Structure) -> Result<Option<String>> {
-        standardization::ensure_within_m1(structure)?;
+        standardization::ensure_typable_charges(structure)?;
         let counts = standardization::adjusted_hydrogens(structure);
         let ranks = canonical_ranks_for(structure);
         let groups = crate::canonical::tautomer::mobile_groups(structure, &counts, &ranks);

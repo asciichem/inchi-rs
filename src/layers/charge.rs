@@ -23,7 +23,7 @@ impl LayerEmitter for ChargeLayer {
     }
 
     fn emit(&self, structure: &Structure) -> Result<Option<String>> {
-        standardization::ensure_within_m1(structure)?;
+        standardization::ensure_typable_charges(structure)?;
         Ok(standardization::charge_layer(structure))
     }
 }
