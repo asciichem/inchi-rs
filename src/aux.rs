@@ -15,35 +15,88 @@ use crate::layers::standardization;
 
 /// The AuxInfo line for a submitted structure (`original`, exactly as
 /// parsed) and its normalized form (`working`, the one the layers
-/// read).
-pub fn aux_info(original: &Structure, working: &Structure) -> Result<String> {
+/// read). `proton_shift` is the net protons the (DE)PROTONATION
+/// standardization moved — the `/p` layer's pinned-path value.
+pub fn aux_info(original: &Structure, working: &Structure, proton_shift: i32) -> Result<String> {
     standardization::ensure_typable_charges(working)?;
     let counts = standardization::adjusted_hydrogens(working);
     let ranks = canonical_ranks_for(working);
     let groups = crate::canonical::tautomer::mobile_groups(working, &counts, &ranks);
 
-    // The normalization-type digit: +1 a mobile-H representation
-    // exists (groups with real mobile hydrogen — charge-only c-point
-    // registrations are not t-groups and count nothing), +1 a group
-    // carries BOTH mobile hydrogen and charge (the salt-merged
-    // (Hn±) super-group — the dissociated-acid tautomerism), +4 a
-    // hard (DE)PROTONATION moved a proton.
-    let tautomeric = groups.iter().any(|group| group.count > 0);
-    let salt_merged = groups
-        .iter()
-        .any(|group| group.count > 0 && group.charge != 0);
-    let norm = i32::from(tautomeric)
-        + i32::from(salt_merged)
-        + 4 * i32::from(working.protons_hard_moved);
+    // The normalization-type digit (the reference's io.bTautomeric):
+    // +1 a tautomeric representation exists — a registered mobile
+    // group holding real hydrogen, or the normalization moved protons
+    // (the `/p` layer — the reference's FLAG_NORM_CONSIDER_TAUT
+    // marker), or an exchangeable isotopic H sits on a heteroatom
+    // (the reference's isotopic-endpoint branch). +1 a merged salt
+    // group (a real-H group that also carries charge — the (Hn±)
+    // super-group). +4 a hard (DE)PROTONATION moved a proton. The
+    // salt and hard bits count only when the +1 did (the reference
+    // adds them under `if (io.bTautomeric)`); charge-only c-point
+    // registrations are not t-groups and count nothing.
+    let real_h = |group: &crate::canonical::tautomer::MobileGroup| group.count > group.charge;
+    let tautomeric = groups.iter().any(|group| real_h(group));
+    let salt_merged = groups.iter().any(|group| real_h(group) && group.charge > 0);
+    let has_p = proton_shift != 0 || standardization::proton_layer(working).is_some();
+    let iso_exchangeable = exchangeable_isotopic_h(working, &counts);
+    let mut norm = i32::from(tautomeric || has_p || iso_exchangeable);
+    if norm > 0 {
+        norm += i32::from(salt_merged);
+        norm += 4 * i32::from(working.protons_hard_moved);
+    }
 
     let (adjacency, invariants) = crate::canonical::graph_of(working);
     // The aux speaks the numbering and symmetry of the representation
     // the reference fills AuxInfo from: for a tautomeric structure the
     // NON-TAUT one (mobile H removed from the endpoints, no t-group
-    // rows), otherwise the structure as the layers read it.
+    // rows), otherwise the structure as the layers read it. Chiral
+    // structures number by the STEREO-informed canonicalization (the
+    // reference's nCanonOrdStereo): the terminal compare extends with
+    // the stereo rows, and when the inverted-parity pass wins its
+    // numbering is adopted (nCompInv2Abs = -1) — the verdict also
+    // decides the `/it:` inverted-stereo block.
     let ranks_aux;
     let symmetry;
-    if tautomeric {
+    let mut inverted_block = String::new();
+    let stereo_centers = crate::canonical::stereo::center_inputs(working, &counts, &ranks);
+    if !stereo_centers.is_empty() {
+        let groups_rows = if tautomeric {
+            Vec::new()
+        } else {
+            crate::canonical::group_membership(working, &counts)
+        };
+        let hydrogens_aux = if tautomeric {
+            let mask = crate::canonical::tautomer::endpoint_mask(working, &counts);
+            crate::canonical::tautomer::without_mobile_h(&counts, &mask)
+        } else {
+            counts.clone()
+        };
+        let (ranks, classes, (main_pairs, inv_pairs, sign)) =
+            crate::canonical::canonical_ranks_and_symmetry_stereo(
+                &adjacency,
+                &invariants,
+                &hydrogens_aux,
+                &groups_rows,
+                &stereo_centers,
+            );
+        ranks_aux = ranks;
+        symmetry = classes;
+        if sign != 0 {
+            // The inverted-stereo block: the marker `im` ("main =
+            // Inv(main)") when the inverted layer is the pairwise
+            // parity-flip of the main over the same centers; the
+            // single-component corpus never prints the list form.
+            let flip_pairs = main_pairs.len() == inv_pairs.len()
+                && main_pairs.iter().zip(&inv_pairs).all(|(main, inv)| {
+                    main.0 == inv.0
+                        && (main.1 + inv.1 == 3
+                            || (!matches!(main.1, 1 | 2) && main.1 == inv.1))
+                });
+            if flip_pairs {
+                inverted_block = "/it:im".to_string();
+            }
+        }
+    } else if tautomeric {
         let mask = crate::canonical::tautomer::endpoint_mask(working, &counts);
         let notaut = crate::canonical::tautomer::without_mobile_h(&counts, &mask);
         let (ranks, classes) =
@@ -63,10 +116,23 @@ pub fn aux_info(original: &Structure, working: &Structure) -> Result<String> {
     }
 
     let mut out = format!("AuxInfo=1/{norm}/N:");
-    // `/N:` — the original atom numbers in canonical order.
+    // `/N:` — the ORIGINAL atom numbers in canonical order (the
+    // reference's nOrigAtNosInCanonOrd reads orig_at_number; the
+    // normalized structure's indices shift when explicit hydrogen
+    // atoms folded away, so the echo structure supplies the map).
+    let original_index: Vec<usize> = original
+        .atoms
+        .iter()
+        .enumerate()
+        .filter(|(_, atom)| atom.element != "H")
+        .map(|(index, _)| index)
+        .collect();
     let mut order: Vec<usize> = (0..working.atoms.len()).collect();
     order.sort_by_key(|&atom| ranks_aux[atom]);
-    let numbering: Vec<String> = order.iter().map(|&atom| (atom + 1).to_string()).collect();
+    let numbering: Vec<String> = order
+        .iter()
+        .map(|&atom| (original_index[atom] + 1).to_string())
+        .collect();
     out.push_str(&numbering.join(","));
 
     // `/E:` — the constitutional equivalence classes: members by
@@ -134,6 +200,10 @@ pub fn aux_info(original: &Structure, working: &Structure) -> Result<String> {
         }
     }
 
+    // `/it:` — the inverted-stereo block from the informed search's
+    // verdict (empty when the absolute pass won or the rows tied).
+    out.push_str(&inverted_block);
+
     // `/CRV:` — normalized charges and unusual valences, ascending
     // canonical number: `<canon>[±charge][.valence]`.
     let bond_sums = working.bond_order_sums();
@@ -184,6 +254,20 @@ pub fn aux_info(original: &Structure, working: &Structure) -> Result<String> {
     Ok(out)
 }
 
+/// Exchangeable isotopic hydrogen on a heteroatom: the structure
+/// carries isotopes AND a non-carbon atom holds hydrogen — the
+/// reference's isotopic-endpoint branch (its salt-candidate scan
+/// counts the heteroatom and sets `nNumIsotopicEndpoints` above one;
+/// isotopes riding carbon — toluene-d3's methyl — never qualify).
+fn exchangeable_isotopic_h(structure: &Structure, counts: &[u32]) -> bool {
+    let isotopic = !structure.isotopic_h.is_empty()
+        || structure.atoms.iter().any(|atom| atom.isotope != 0);
+    isotopic
+        && structure.atoms.iter().enumerate().any(|(index, atom)| {
+            atom.element != "C" && atom.element != "H" && counts[index] > 0
+        })
+}
+
 /// The `/rA` `/rB` `/rC` echo of the submitted structure, in the
 /// input's own atom order, explicit hydrogens included.
 fn reversibility_block(original: &Structure) -> String {
@@ -219,8 +303,8 @@ fn reversibility_block(original: &Structure) -> String {
     }
 
     // `/rB` — one `;`-terminated entry per atom 2..n: the bonds to
-    // lower-numbered neighbors, ascending, each a type char (wedge
-    // perspective applied) and the neighbor's 1-based number.
+    // lower-numbered neighbors, ascending, each a type char and the
+    // neighbor's 1-based number.
     out.push_str("/rB:");
     for j in 1..n {
         let mut entries: Vec<(usize, char)> = Vec::new();
@@ -236,7 +320,12 @@ fn reversibility_block(original: &Structure) -> String {
                 continue;
             }
             let stereo = original.stereo_bonds.get(&index).copied().unwrap_or(0);
-            entries.push((other, bond_char(kind, stereo, end < other)));
+            // The wedge perspective reads the bond line's FIRST atom
+            // (the reference stores +stereo there, -stereo at the
+            // other end): `p`/`n` when this end is first, `P`/`N`
+            // when the wedge points from the other end.
+            let this_end_first = from == j;
+            entries.push((other, bond_char(kind, stereo, this_end_first)));
         }
         entries.sort_unstable();
         for (neighbor, character) in entries {
@@ -259,11 +348,11 @@ fn reversibility_block(original: &Structure) -> String {
     out
 }
 
-/// The bond-type character: `s`/`d`/`t`/`a`, with the wedge codes
-/// rendered from the perspective of the endpoint currently listed —
-/// an up-wedge is `p` at its first-listed atom and `n` at the other
-/// (up here is down there); a dash is `P`/`N` the same way; either
-/// is `v` (the reference's WriteOrigBonds switch).
+/// The bond-type character (the reference's WriteOrigBonds switch,
+/// `at[j].bond_stereo` read at the current endpoint with its sign):
+/// an up wedge is `p` at the bond-line-first atom, `P` at the other
+/// (the wedge points from the neighbor); a dash is `n`/`N` the same
+/// way; either is `v`; plain bonds `s`/`d`/`t`/`a`.
 fn bond_char(kind: u32, stereo: u8, this_end_first: bool) -> char {
     match kind {
         2 => 'd',
@@ -274,12 +363,12 @@ fn bond_char(kind: u32, stereo: u8, this_end_first: bool) -> char {
                 if this_end_first {
                     'p'
                 } else {
-                    'n'
+                    'P'
                 }
             }
             6 => {
                 if this_end_first {
-                    'P'
+                    'n'
                 } else {
                     'N'
                 }
@@ -332,8 +421,8 @@ mod tests {
         let original = crate::molfile::parse(WATER_MOL).expect("parses");
         let mut working = original.clone();
         working.fold_explicit_hydrogens();
-        let aux = aux_info(&original, &working).expect("aux");
-        assert_eq!(aux, "AuxInfo=1/0/N:1/rA:1nO/rB:;/rC:12,12,0;");
+        let aux = aux_info(&original, &working, 0).expect("aux");
+        assert_eq!(aux, "AuxInfo=1/0/N:1/rA:1nO/rB:/rC:12,12,0;");
     }
 
     #[test]
@@ -349,10 +438,12 @@ mod tests {
         assert_eq!(bond_char(1, 0, true), 's');
         assert_eq!(bond_char(2, 0, true), 'd');
         assert_eq!(bond_char(4, 0, true), 'a');
+        // Up: p at the bond-line-first atom, P from the other end.
         assert_eq!(bond_char(1, 1, true), 'p');
-        assert_eq!(bond_char(1, 1, false), 'n');
+        assert_eq!(bond_char(1, 1, false), 'P');
+        // Dash: n at the first atom, N from the other end.
         assert_eq!(bond_char(1, 6, true), 'n');
-        assert_eq!(bond_char(1, 6, false), 'p');
+        assert_eq!(bond_char(1, 6, false), 'N');
     }
 
     #[test]
@@ -374,7 +465,7 @@ mod tests {
         };
         working.fold_explicit_hydrogens();
         let original = working.clone();
-        let aux = aux_info(&original, &working).expect("aux");
+        let aux = aux_info(&original, &working, 0).expect("aux");
         assert!(aux.starts_with("AuxInfo=1/1/N:"), "{aux}");
         assert!(aux.contains("/CRV:"), "{aux}");
         assert!(aux.contains("(3,4)"), "{aux}");
