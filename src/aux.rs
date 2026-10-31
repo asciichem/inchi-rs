@@ -163,10 +163,19 @@ pub fn aux_info(original: &Structure, working: &Structure, proton_shift: i32) ->
     // `/gE:` — equivalence of the registered mobile groups: groups
     // whose members fill the same symmetry classes are one class,
     // labelled by the groups' 1-based positions in the identifier.
-    if groups.len() > 1 {
+    // Only t-group-born registrations (real mobile hydrogen) speak —
+    // charge-only c-points register no identifier rows.
+    let taut_groups: Vec<usize> = groups
+        .iter()
+        .enumerate()
+        .filter(|(_, group)| group.count > group.charge)
+        .map(|(index, _)| index)
+        .collect();
+    if taut_groups.len() > 1 {
         let atom_of_rank = |rank: u32| ranks_aux.iter().position(|&r| r == rank);
         let mut signatures: std::collections::BTreeMap<Vec<u32>, Vec<usize>> = Default::default();
-        for (index, group) in groups.iter().enumerate() {
+        for index in &taut_groups {
+            let group = &groups[*index];
             let mut signature: Vec<u32> = group
                 .ranks
                 .iter()
@@ -174,7 +183,7 @@ pub fn aux_info(original: &Structure, working: &Structure, proton_shift: i32) ->
                 .map(|atom| symmetry[atom])
                 .collect();
             signature.sort_unstable();
-            signatures.entry(signature).or_default().push(index);
+            signatures.entry(signature).or_default().push(*index);
         }
         let mut equivalents: Vec<Vec<u32>> = signatures
             .into_values()
@@ -203,6 +212,19 @@ pub fn aux_info(original: &Structure, working: &Structure, proton_shift: i32) ->
     // `/it:` — the inverted-stereo block from the informed search's
     // verdict (empty when the absolute pass won or the rows tied).
     out.push_str(&inverted_block);
+
+    // `/I:/E:m` — the isotopic block: fixed isotopic atoms present and
+    // constitutional equivalence spoken — the isotopic numbering adds
+    // nothing (the empty /I:) and the isotopic equivalence equals the
+    // plain classes (the `m` marker, "same as the main layer").
+    let fixed_isotopes = working.atoms.iter().any(|atom| atom.isotope != 0)
+        || working
+            .isotopic_h
+            .iter()
+            .any(|(carrier, _)| working.atoms[*carrier].element == "C");
+    if fixed_isotopes && out.contains("/E:") {
+        out.push_str("/I:/E:m");
+    }
 
     // `/CRV:` — normalized charges and unusual valences, ascending
     // canonical number: `<canon>[±charge][.valence]`. The charges are
