@@ -28,7 +28,12 @@ fn main() {
                 println!("PRE groups:");
                 for g in &pre_groups {
                     let members: Vec<String> = g.ranks.iter().map(|r| r.to_string()).collect();
-                    println!("  group count={} charge={}: ranks {}", g.count, g.charge, members.join(","));
+                    println!(
+                        "  group count={} charge={}: ranks {}",
+                        g.count,
+                        g.charge,
+                        members.join(",")
+                    );
                 }
                 let engine = Engine::from_molfile(case["molfile"].as_str().unwrap()).unwrap();
                 let s = engine.structure();
@@ -36,9 +41,16 @@ fn main() {
                 let ranks = chemomer::layers::hydrogen::canonical_ranks_for(s);
                 let groups = chemomer::canonical::tautomer::mobile_groups(s, &counts, &ranks);
                 let pinned = s.atoms.iter().all(|a| a.h_pinned);
-                println!("pinned={pinned} protons_hard_moved={} total_charge={}", s.protons_hard_moved, s.total_charge());
+                println!(
+                    "pinned={pinned} protons_hard_moved={} total_charge={}",
+                    s.protons_hard_moved,
+                    s.total_charge()
+                );
                 for (i, a) in s.atoms.iter().enumerate() {
-                    if a.charge != 0 || counts[i] > 0 && matches!(a.element.as_str(), "O"|"N"|"S"|"Se"|"Te") {
+                    if a.charge != 0
+                        || counts[i] > 0
+                            && matches!(a.element.as_str(), "O" | "N" | "S" | "Se" | "Te")
+                    {
                         println!(
                             "  atom {i}: {} charge={:+} h={} pinned={} rank={} counts={}",
                             a.element, a.charge, a.h_count, a.h_pinned, ranks[i], counts[i]
@@ -47,7 +59,12 @@ fn main() {
                 }
                 for g in &groups {
                     let members: Vec<String> = g.ranks.iter().map(|r| r.to_string()).collect();
-                    println!("group count={} charge={}: ranks {}", g.count, g.charge, members.join(","));
+                    println!(
+                        "group count={} charge={}: ranks {}",
+                        g.count,
+                        g.charge,
+                        members.join(",")
+                    );
                 }
                 let plan = chemomer::layers::standardization::charge_plan(s);
                 println!("charge_plan: {:?}", plan);

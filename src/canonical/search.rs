@@ -276,11 +276,7 @@ pub fn canonical_ranks_and_symmetry_stereo(
     hydrogens: &[u32],
     groups: &[(u32, Vec<usize>)],
     centers: &[(usize, Vec<usize>, u32)],
-) -> (
-    Vec<u32>,
-    Vec<u32>,
-    (Vec<(u32, u32)>, Vec<(u32, u32)>, i32),
-) {
+) -> (Vec<u32>, Vec<u32>, (Vec<(u32, u32)>, Vec<(u32, u32)>, i32)) {
     let run = |flip: bool| {
         let (ranks, symmetry) =
             search_with_stereo(adjacency, invariants, hydrogens, groups, centers, flip);
@@ -295,11 +291,19 @@ pub fn canonical_ranks_and_symmetry_stereo(
     let mut sign = 0;
     for index in 0..abs_pairs.len().min(inv_pairs.len()) {
         if abs_pairs[index].0 != inv_pairs[index].0 {
-            sign = if inv_pairs[index].0 > abs_pairs[index].0 { 1 } else { -1 };
+            sign = if inv_pairs[index].0 > abs_pairs[index].0 {
+                1
+            } else {
+                -1
+            };
             break;
         }
         if abs_pairs[index].1 != inv_pairs[index].1 {
-            sign = if inv_pairs[index].1 > abs_pairs[index].1 { 1 } else { -1 };
+            sign = if inv_pairs[index].1 > abs_pairs[index].1 {
+                1
+            } else {
+                -1
+            };
             break;
         }
     }
@@ -514,13 +518,15 @@ fn descend_stereo(
                 groups
                     .iter()
                     .map(|(count, members)| {
-                        let mut member_ranks: Vec<u32> = members.iter().map(|&m| ranks[m]).collect();
+                        let mut member_ranks: Vec<u32> =
+                            members.iter().map(|&m| ranks[m]).collect();
                         member_ranks.sort_unstable();
                         (*count, member_ranks)
                     })
                     .collect()
             };
-            let stereo_rows = |p: &Partition| super::stereo::terminal_rows(centers, p.ranks(), flip);
+            let stereo_rows =
+                |p: &Partition| super::stereo::terminal_rows(centers, p.ranks(), flip);
             let better = match &best {
                 None => true,
                 Some(best_partition) => {
