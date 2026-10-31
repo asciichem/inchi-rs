@@ -115,6 +115,7 @@ pub fn parse(input: &str) -> Result<Structure> {
         positions,
         isotopic_h: Default::default(),
         protons_hard_moved: false,
+        ride_marks: Vec::new(),
     })
 }
 

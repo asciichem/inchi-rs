@@ -804,8 +804,12 @@ pub struct StandardizedProtons {
     pub charge: Vec<i32>,
     pub removed_protons: u32,
     pub added_protons: u32,
-    /// (a, b, new order) for the bonds whose order moved; `a < b`.
-    pub bonds: Vec<(usize, usize, u32)>,
+    /// (a, b, new order, ride mark) for the bonds whose order moved;
+    /// `a < b`. The mark is the bond TYPE the reference's ride leaves
+    /// (extr_ct.h): ALT12NS = 9 ("1 or 2", either salt role) on
+    /// single/double-sourced moves, ALTERN|TRIPLE = 7 ("2 or 3",
+    /// neither role) on triple-sourced ones.
+    pub bonds: Vec<(usize, usize, u32, u8)>,
     /// A HARD (DE)PROTONATION phase moved a proton (the 5.1b
     /// charge-point ride-out or the 5.2b acidic hard removal) — the
     /// reference's FLAG_PROTON_NP_HARD_REMOVED / AC_HARD_* bits,
@@ -844,13 +848,15 @@ pub fn standardize(structure: &Structure) -> Option<StandardizedProtons> {
     // It runs BEFORE the 5.2 acid phase — the reference never re-runs
     // it afterwards.
     let after_51a = totals(&context);
+    let mut hard_bonds: Vec<(usize, usize, u32, u8)> = Vec::new();
     if after_51a[attot::NP_PLUS] > 0 {
         // The /p accounting is the reference's net proton counter
         // (tni.nNumRemovedProtons): every H that leaves the structure
         // counts up, every H the ride pins at its destination counts
         // back down — the cancelled (+) itself never does.
         let hydrogens_before: i64 = context.h.iter().map(|&h| h as i64).sum();
-        let rode_out = hard_remove_hplus_np(&mut context);
+        let (rode_out, bonds) = hard_remove_hplus_np(&mut context);
+        hard_bonds = bonds;
         let hydrogens_after: i64 = context.h.iter().map(|&h| h as i64).sum();
         hard_moved |= rode_out > 0;
         if hydrogens_before > hydrogens_after {
@@ -878,11 +884,11 @@ pub fn standardize(structure: &Structure) -> Option<StandardizedProtons> {
     // it as a charge. Net effect per move: the donor stays neutral,
     // the acid carries the -1.
     let after = totals(&context);
-    let mut moved_bonds = Vec::new();
+    let mut moved_bonds = hard_bonds;
     if after[attot::TOT_CHARGE] > 0 {
         let (moved, bonds) = hard_remove_acidic_protons(&mut context, after[attot::TOT_CHARGE]);
         removed += moved;
-        moved_bonds = bonds;
+        moved_bonds.extend(bonds);
         hard_moved |= moved > 0;
     }
 
@@ -897,7 +903,7 @@ pub fn standardize(structure: &Structure) -> Option<StandardizedProtons> {
             charge: context.charge,
             removed_protons: 0,
             added_protons: 0,
-            bonds: Vec::new(),
+            bonds: moved_bonds,
             hard_moved: false,
         });
     }
@@ -946,11 +952,17 @@ const PR_HARD_TYP_H: u16 =
 /// on both ends: donors shed their proton, the destination may pin a
 /// fixed hydrogen), the charge deltas land on the charge-group
 /// members (the (+) leaves the cation), and the moved atom-atom bonds
-/// keep their new orders. Every pass re-reads both stars from the
-/// updated H/charge/bond state.
-fn hard_remove_hplus_np(context: &mut ProtonContext) -> u32 {
+/// keep their new orders. The moved orders are RETURNED (the
+/// reference's BNS_EF_SAVE_ALL persists them into the structure): the
+/// downstream salt-tautomer machinery reclassifies the H-less
+/// endpoint by its raised bond order — an oxime O whose proton rode
+/// out reads order 2 and re-enters the salt pairing as an acceptor.
+/// Every pass re-reads both stars from the updated H/charge/bond
+/// state.
+fn hard_remove_hplus_np(context: &mut ProtonContext) -> (u32, Vec<(usize, usize, u32, u8)>) {
     let n = context.element.len();
     let mut rounds = 0;
+    let mut all_moved: Vec<(usize, usize, u32, u8)> = Vec::new();
     loop {
         // The (+) charge group: N-classed MSK_NP atoms at charge 0 or
         // +1 (CreateCGroupInBnStruct's OPPOSITE_CHARGE_IN_CGROUP=0
@@ -1064,13 +1076,24 @@ fn hard_remove_hplus_np(context: &mut ProtonContext) -> u32 {
             }) else {
                 continue;
             };
+            // The mark rides on the SOURCE order: a triple demotes to
+            // "2 or 3" (the reference's ALTERN|TRIPLE — a bond type
+            // the salt role sets never match), anything else to
+            // ALT12NS "1 or 2".
+            let mark = if entry.2 == 6 { 7u8 } else { 9u8 };
             entry.2 = (entry.2 + 2 * delta).max(2);
+            // The ride's pi alternation persists (the reference's
+            // BNS_EF_SAVE_ALL): the new orders leave the 5.1b pass
+            // with the proton shift, the downstream tautomer machinery
+            // reads them.
+            let order = (entry.2 / 2) as u32;
+            all_moved.push(((*a).min(*b), (*a).max(*b), order, mark));
             context.cbv2[*a] += 2 * delta;
             context.cbv2[*b] += 2 * delta;
         }
         rounds += 1;
     }
-    rounds
+    (rounds, all_moved)
 }
 
 /// The hard-removal star memberships (HardRemoveAcidicProtons'
@@ -1222,9 +1245,9 @@ pub(crate) fn rem_proton_route(
 fn hard_remove_acidic_protons(
     context: &mut ProtonContext,
     quota: i64,
-) -> (u32, Vec<(usize, usize, u32)>) {
+) -> (u32, Vec<(usize, usize, u32, u8)>) {
     let mut moved = 0;
-    let mut all_moved: Vec<(usize, usize, u32)> = Vec::new();
+    let mut all_moved: Vec<(usize, usize, u32, u8)> = Vec::new();
     while (moved as i64) < quota {
         let (donors, acids) = hard_removal_stars(context);
         let acid_sites: Vec<usize> = (0..acids.len()).filter(|&atom| acids[atom]).collect();
@@ -1260,10 +1283,11 @@ fn hard_remove_acidic_protons(
             }) else {
                 continue;
             };
+            let mark = if entry.2 == 6 { 7u8 } else { 9u8 };
             let order2 = (entry.2 + 2 * delta).max(2);
             entry.2 = order2;
             let order = (order2 / 2) as u32;
-            all_moved.push((a, b, order));
+            all_moved.push((a.min(b), a.max(b), order, mark));
             // Keep the doubled valence sums the classifier reads.
             context.cbv2[a] += 2 * delta;
             context.cbv2[b] += 2 * delta;
@@ -1418,6 +1442,7 @@ mod tests {
             positions: Default::default(),
             isotopic_h: Default::default(),
             protons_hard_moved: false,
+            ride_marks: Vec::new(),
         }
     }
 

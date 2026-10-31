@@ -38,15 +38,21 @@ impl Engine {
             // The hard removal's π alternation: the bond orders the
             // route moved ride with the proton (the reference keeps
             // them — BNS_EF_SAVE_ALL), and the tautomer machinery
-            // reads the new orders from here on.
-            for (a, b, order) in &std.bonds {
-                for bond in structure.bonds.iter_mut() {
+            // reads the new orders from here on. The ride also leaves
+            // its mobility MARKS (the reference's ALT12NS /
+            // ALTERN|TRIPLE bond types): the salt-role sets read
+            // those, not the plain orders.
+            let mut ride_marks = vec![0u8; structure.bonds.len()];
+            for (a, b, order, mark) in &std.bonds {
+                for (index, bond) in structure.bonds.iter_mut().enumerate() {
                     let (from, to) = (bond.0, bond.1);
                     if (from == *a && to == *b) || (from == *b && to == *a) {
                         bond.2 = *order;
+                        ride_marks[index] = *mark;
                     }
                 }
             }
+            structure.ride_marks = ride_marks;
         }
         let group_removals = remove_group_protons(&mut structure);
         proton_shift += group_removals;
