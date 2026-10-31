@@ -45,6 +45,13 @@ pub struct Structure {
     /// t-group gates relax to donor-only and the salt merge admits
     /// t-group-carrying candidates without a negative donor.
     pub protons_hard_moved: bool,
+    /// Per-bond mobility marks the proton ride left (parallel to
+    /// `bonds`, zero = plain): the reference's BNS ride persists the
+    /// moved bonds as bond TYPES, not concrete orders — ALT12NS (9,
+    /// "1 or 2": either salt role) on single/double-sourced moves,
+    /// ALTERN|TRIPLE (7, "2 or 3": neither role) on triple-sourced
+    /// ones — while the valence arithmetic reads the moved orders.
+    pub ride_marks: Vec<u8>,
 }
 
 /// Allowed valences of the organic subset; the implicit hydrogen

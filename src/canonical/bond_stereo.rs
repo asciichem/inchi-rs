@@ -194,6 +194,7 @@ mod tests {
             positions: coords,
             isotopic_h: Default::default(),
             protons_hard_moved: false,
+            ride_marks: Vec::new(),
         }
     }
 
@@ -233,6 +234,7 @@ mod tests {
             positions: vec![(12.0, 22.0), (72.0, 50.0), (132.0, 50.0)],
             isotopic_h: Default::default(),
             protons_hard_moved: false,
+            ride_marks: Vec::new(),
         };
         assert!(segments(&structure, &[3, 1, 2], &[1, 2, 3]).is_empty());
     }
@@ -258,6 +260,7 @@ mod tests {
             positions: coords,
             isotopic_h: Default::default(),
             protons_hard_moved: false,
+            ride_marks: Vec::new(),
         };
         assert!(segments(&structure, &[1, 2, 1, 2, 1, 2], &[1, 2, 3, 4, 5, 6]).is_empty());
     }
