@@ -1,10 +1,10 @@
 [package]
-name = "inchi-rs"
+name = "chemomer"
 version = "0.1.0"
 edition = "2021"
 description = "Native Rust InChI engine, gated by the shared inchi-tests oracle corpus"
 license = "MIT"
-repository = "https://github.com/asciichem/inchi-rs"
+repository = "https://github.com/chemomer/chemomer"
 
 [lib]
 crate-type = ["lib", "cdylib"]

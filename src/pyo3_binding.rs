@@ -1,5 +1,5 @@
 //! The Python binding (feature `pyo3`): the engine as a native
-//! extension module `inchi_rs` with `from_molfile(molfile) ->
+//! extension module `chemomer` with `from_molfile(molfile) ->
 //! (inchi, inchikey)`.
 
 use pyo3::exceptions::PyValueError;
@@ -20,7 +20,7 @@ fn from_molfile(molfile: &str) -> PyResult<(String, String)> {
 }
 
 #[pymodule]
-fn inchi_rs(module: &Bound<'_, PyModule>) -> PyResult<()> {
+fn chemomer(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(from_molfile, module)?)?;
     Ok(())
 }

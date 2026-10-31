@@ -1,7 +1,7 @@
 //! Probe: run the engine on a molfile path given as arg.
 use std::fs;
 
-use inchi_rs::Engine;
+use chemomer::Engine;
 
 fn main() {
     let path = std::env::args().nth(1).expect("molfile path");

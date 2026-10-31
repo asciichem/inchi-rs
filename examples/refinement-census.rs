@@ -9,7 +9,7 @@
 use std::fs;
 use std::path::PathBuf;
 
-use inchi_rs::canonical::equitable_partition;
+use chemomer::canonical::equitable_partition;
 
 fn main() {
     let dir = std::env::var("INCHI_TESTS")
@@ -39,7 +39,7 @@ fn main() {
                 .expect("valid fixtures");
         for case in parsed {
             let molfile = case["molfile"].as_str().expect("molfile");
-            let structure = inchi_rs::parse_molfile(molfile).expect("parses");
+            let structure = chemomer::parse_molfile(molfile).expect("parses");
             let partition = equitable_partition(&structure);
             cases += 1;
             atoms += partition.at_number().len();
