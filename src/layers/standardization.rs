@@ -71,7 +71,7 @@ pub struct ChargePlan {
     pub p_anion: bool,
 }
 
-fn cation_is_proton_related(atom: &AtomRecord, degree: u32, bond_sum: f64) -> bool {
+pub(crate) fn cation_is_proton_related(atom: &AtomRecord, degree: u32, bond_sum: f64) -> bool {
     atom.h_count > 0 || proton_deficient_pnicogen(atom, degree, bond_sum)
 }
 

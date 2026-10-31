@@ -205,23 +205,42 @@ pub fn aux_info(original: &Structure, working: &Structure, proton_shift: i32) ->
     out.push_str(&inverted_block);
 
     // `/CRV:` — normalized charges and unusual valences, ascending
-    // canonical number: `<canon>[±charge][.valence]`.
+    // canonical number: `<canon>[±charge][.valence]`. The charges are
+    // the reference's norm_at charges: our salt normalization zeroes a
+    // bonded fixed-cation/anion pair the reference's norm_at KEEPS
+    // (its BNS rides the valence internally), so those two atoms read
+    // their submitted charges. The unusual valence reads the
+    // BNS-resolved integer bond valence, not the 1.5 aromatic sums.
     let bond_sums = working.bond_order_sums();
     let degrees = working.degrees();
+    let kept = kept_ion_pair_charges(original);
+    let original_sums = original.bond_order_sums();
     let mut flagged: Vec<(u32, i32, i32)> = working
         .atoms
         .iter()
         .enumerate()
         .map(|(atom, a)| {
             let el = crate::canonical::protons::el_number(&a.element).unwrap_or(0);
+            // A kept ion-pair atom reads its SUBMITTED charge and the
+            // SUBMITTED bond valence — the reference's norm_at keeps
+            // both (its BNS rides the valence without rewriting).
+            let kept = kept
+                .as_ref()
+                .and_then(|map| map.get(&original_index[atom]).copied())
+                .unwrap_or(0);
+            let (charge, bond_valence) = if a.charge == 0 && kept != 0 {
+                (kept, original_sums[original_index[atom]].round() as i32)
+            } else {
+                (a.charge, bond_sums[atom].round() as i32)
+            };
             let unusual = crate::canonical::protons::unusual_el_valence(
                 el,
-                a.charge,
-                bond_sums[atom].round() as i32,
+                charge,
+                bond_valence,
                 counts[atom],
                 degrees[atom],
             );
-            (ranks_aux[atom], a.charge, unusual)
+            (ranks_aux[atom], charge, unusual)
         })
         .filter(|&(_, charge, unusual)| charge != 0 || unusual != 0)
         .collect();
@@ -268,6 +287,55 @@ fn exchangeable_isotopic_h(structure: &Structure, counts: &[u32]) -> bool {
         })
 }
 
+/// The charges the salt normalization zeroes but the reference's
+/// norm_at KEEPS: a directly-bonded fixed-cation/anion pair (the
+/// terminal ion pair). CRV reads these submitted charges for the two
+/// consumed atoms — and nothing else: everywhere else the normalized
+/// structure's charges stand (the hard (DE)PROTONATION sites among
+/// them, whose CRV values are the MOVED ones).
+fn kept_ion_pair_charges(original: &Structure) -> Option<std::collections::HashMap<usize, i32>> {
+    let sums = original.bond_order_sums();
+    let degrees = original.degrees();
+    let mut neighbors: Vec<Vec<usize>> = vec![Vec::new(); original.atoms.len()];
+    for &(from, to, _) in &original.bonds {
+        neighbors[from].push(to);
+        neighbors[to].push(from);
+    }
+    let mut consumed = vec![false; original.atoms.len()];
+    let mut map = std::collections::HashMap::new();
+    let anions: Vec<usize> = original
+        .atoms
+        .iter()
+        .enumerate()
+        .filter(|(_, atom)| {
+            atom.charge < 0 && matches!(atom.element.as_str(), "O" | "S" | "Se" | "Te" | "N")
+        })
+        .map(|(index, _)| index)
+        .collect();
+    for anion in anions {
+        if consumed[anion] {
+            continue;
+        }
+        let found = neighbors[anion].iter().copied().find(|&site| {
+            original.atoms[site].charge > 0
+                && !consumed[site]
+                && degrees[site] == 4
+                && !standardization::cation_is_proton_related(
+                    &original.atoms[site],
+                    degrees[site],
+                    sums[site],
+                )
+        });
+        if let Some(site) = found {
+            map.insert(anion, original.atoms[anion].charge);
+            map.insert(site, original.atoms[site].charge);
+            consumed[anion] = true;
+            consumed[site] = true;
+        }
+    }
+    (!map.is_empty()).then_some(map)
+}
+
 /// The `/rA` `/rB` `/rC` echo of the submitted structure, in the
 /// input's own atom order, explicit hydrogens included.
 fn reversibility_block(original: &Structure) -> String {
@@ -309,7 +377,7 @@ fn reversibility_block(original: &Structure) -> String {
     for j in 1..n {
         let mut entries: Vec<(usize, char)> = Vec::new();
         for (index, &(from, to, kind)) in original.bonds.iter().enumerate() {
-            let (end, other) = if from == j {
+            let (_end, other) = if from == j {
                 (j, to)
             } else if to == j {
                 (j, from)
