@@ -2,7 +2,7 @@
 //! structure's groups, charge plan, pinned state.
 use std::fs;
 
-use inchi_rs::Engine;
+use chemomer::Engine;
 
 fn main() {
     let id = std::env::args().nth(1).expect("id");
@@ -18,13 +18,13 @@ fn main() {
             if case["id"].as_str().unwrap() == format!("identity/{id}") {
                 // Rebuild the PRE-standardization structure the way
                 // Engine::from_molfile does before protons::standardize.
-                let mut pre = inchi_rs::parse_molfile(case["molfile"].as_str().unwrap()).unwrap();
-                inchi_rs::layers::standardization::normalize_internal_salts(&mut pre);
+                let mut pre = chemomer::parse_molfile(case["molfile"].as_str().unwrap()).unwrap();
+                chemomer::layers::standardization::normalize_internal_salts(&mut pre);
                 pre.fold_explicit_hydrogens();
                 let pre_counts = pre.hydrogens();
-                let pre_ranks = inchi_rs::layers::hydrogen::canonical_ranks_for(&pre);
+                let pre_ranks = chemomer::layers::hydrogen::canonical_ranks_for(&pre);
                 let pre_groups =
-                    inchi_rs::canonical::tautomer::mobile_groups(&pre, &pre_counts, &pre_ranks);
+                    chemomer::canonical::tautomer::mobile_groups(&pre, &pre_counts, &pre_ranks);
                 println!("PRE groups:");
                 for g in &pre_groups {
                     let members: Vec<String> = g.ranks.iter().map(|r| r.to_string()).collect();
@@ -32,9 +32,9 @@ fn main() {
                 }
                 let engine = Engine::from_molfile(case["molfile"].as_str().unwrap()).unwrap();
                 let s = engine.structure();
-                let counts = inchi_rs::layers::standardization::adjusted_hydrogens(s);
-                let ranks = inchi_rs::layers::hydrogen::canonical_ranks_for(s);
-                let groups = inchi_rs::canonical::tautomer::mobile_groups(s, &counts, &ranks);
+                let counts = chemomer::layers::standardization::adjusted_hydrogens(s);
+                let ranks = chemomer::layers::hydrogen::canonical_ranks_for(s);
+                let groups = chemomer::canonical::tautomer::mobile_groups(s, &counts, &ranks);
                 let pinned = s.atoms.iter().all(|a| a.h_pinned);
                 println!("pinned={pinned} protons_hard_moved={} total_charge={}", s.protons_hard_moved, s.total_charge());
                 for (i, a) in s.atoms.iter().enumerate() {
@@ -49,7 +49,7 @@ fn main() {
                     let members: Vec<String> = g.ranks.iter().map(|r| r.to_string()).collect();
                     println!("group count={} charge={}: ranks {}", g.count, g.charge, members.join(","));
                 }
-                let plan = inchi_rs::layers::standardization::charge_plan(s);
+                let plan = chemomer::layers::standardization::charge_plan(s);
                 println!("charge_plan: {:?}", plan);
                 println!("inchi: {}", engine.inchi_string().unwrap());
                 println!("aux:   {}", engine.aux_string().unwrap());

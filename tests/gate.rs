@@ -174,7 +174,7 @@ fn the_aux_info_equals_the_oracle_recording() {
             continue;
         };
         let molfile = case["molfile"].as_str().expect("molfile");
-        match inchi_rs::Engine::from_molfile(molfile).and_then(|engine| engine.aux_string()) {
+        match chemomer::Engine::from_molfile(molfile).and_then(|engine| engine.aux_string()) {
             Ok(assembled) => {
                 if assembled == recorded {
                     pass += 1;
