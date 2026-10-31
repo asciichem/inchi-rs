@@ -1,11 +1,11 @@
-# inchi-rs
+# chemomer
 
 The production InChI engine: a native Rust implementation of InChI
 derivation — canonical ranking, every standard layer, and the
 InChIKey — with no third-party binary at runtime.
 
 It is gated by the shared oracle corpus
-[inchi-tests](https://github.com/asciichem/inchi-tests), pinned in CI
+[inchi-tests](https://github.com/chemomer/inchi-tests), pinned in CI
 at `v0.3.1` (5559 identity fixtures). The corpus is recorded from
 IUPAC `inchi-1` (MIT) at
 development time; the IUPAC binary is a test oracle only and is never
@@ -25,11 +25,11 @@ not a settlement.
 
 - **Library** — `Engine::from_molfile(molfile)` → `segments()`,
   `inchi_string()`, `inchikey()`. Zero runtime dependencies.
-- **C ABI** — the crate builds a `cdylib`: `inchi_rs_from_molfile`,
-  `inchi_rs_inchikey`, `inchi_rs_string_free`,
-  `inchi_rs_last_error` — drivable from Ruby FFI, Python ctypes,
+- **C ABI** — the crate builds a `cdylib`: `chemomer_from_molfile`,
+  `chemomer_inchikey`, `chemomer_string_free`,
+  `chemomer_last_error` — drivable from Ruby FFI, Python ctypes,
   Node ffi-napi, Swift.
-- **Feature-gated bindings** — `pyo3` (a native `inchi_rs` Python
+- **Feature-gated bindings** — `pyo3` (a native `chemomer` Python
   module), `wasm` (wasm-bindgen exports), `napi` (Node). Each gates
   its own dependency tree; the default build compiles none of them.
 

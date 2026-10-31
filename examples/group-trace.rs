@@ -1,7 +1,7 @@
 //! Trace mobile groups: members with elements.
 use std::fs;
 
-use inchi_rs::Engine;
+use chemomer::Engine;
 
 fn main() {
     let id = std::env::args().nth(1).expect("id");
@@ -17,20 +17,20 @@ fn main() {
             if case["id"].as_str().unwrap() == format!("identity/{id}") {
                 let engine = Engine::from_molfile(case["molfile"].as_str().unwrap()).unwrap();
                 let s = engine.structure();
-                let counts = inchi_rs::layers::standardization::adjusted_hydrogens(s);
+                let counts = chemomer::layers::standardization::adjusted_hydrogens(s);
                 let groups = {
-                    let (adjacency, invariants) = inchi_rs::canonical::graph_of(s);
-                    let mask = inchi_rs::canonical::tautomer::endpoint_mask(s, &counts);
-                    let groups = inchi_rs::canonical::group_membership(s, &counts);
-                    let ranks = inchi_rs::canonical::canonical_ranks(
+                    let (adjacency, invariants) = chemomer::canonical::graph_of(s);
+                    let mask = chemomer::canonical::tautomer::endpoint_mask(s, &counts);
+                    let groups = chemomer::canonical::group_membership(s, &counts);
+                    let ranks = chemomer::canonical::canonical_ranks(
                         &adjacency,
                         &invariants,
-                        &inchi_rs::canonical::tautomer::without_mobile_h(&counts, &mask),
+                        &chemomer::canonical::tautomer::without_mobile_h(&counts, &mask),
                         &groups,
                     );
-                    inchi_rs::canonical::tautomer::mobile_groups(s, &counts, &ranks)
+                    chemomer::canonical::tautomer::mobile_groups(s, &counts, &ranks)
                 };
-                let mask = inchi_rs::canonical::tautomer::endpoint_mask(s, &counts);
+                let mask = chemomer::canonical::tautomer::endpoint_mask(s, &counts);
                 for (i, a) in s.atoms.iter().enumerate() {
                     if mask[i] {
                         println!("masked atom {i}: {} h={}", a.element, counts[i]);

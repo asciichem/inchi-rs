@@ -64,7 +64,7 @@ fn the_identifier_equals_the_oracle_recording() {
 
         let molfile = case["molfile"].as_str().expect("molfile");
 
-        match inchi_rs::Engine::from_molfile(molfile).and_then(|engine| engine.inchi_string()) {
+        match chemomer::Engine::from_molfile(molfile).and_then(|engine| engine.inchi_string()) {
             Ok(assembled) => {
                 // Full byte equality: every layer present, in the
                 // oracle's order, byte-identical.
@@ -75,7 +75,7 @@ fn the_identifier_equals_the_oracle_recording() {
                 }
                 // The native hasher must reproduce every recorded
                 // InChIKey from the recorded identifier.
-                let key = inchi_rs::key::inchikey(recorded).expect("keys");
+                let key = chemomer::key::inchikey(recorded).expect("keys");
                 if key != case["inchikey"].as_str().unwrap_or("") {
                     ok = false;
                     failures_now.push(format!(

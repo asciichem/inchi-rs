@@ -2,8 +2,8 @@
 //! runtime (Ruby FFI, Python ctypes, Node ffi-napi, Swift, …) can
 //! drive the engine without a bespoke binding. Ownership: every
 //! returned string is heap-allocated and must be released with
-//! [`inchi_rs_string_free`]; on error the function returns null and
-//! [`inchi_rs_last_error`] carries the message for the calling
+//! [`chemomer_string_free`]; on error the function returns null and
+//! [`chemomer_last_error`] carries the message for the calling
 //! thread. The crate-wide `#![deny(unsafe_code)]` is lifted only
 //! inside this module — the boundary where unsafety is the job.
 
@@ -26,7 +26,7 @@ fn set_error(message: String) {
 /// The pointer must have been returned by one of this ABI's string
 /// functions and not yet freed.
 #[no_mangle]
-pub unsafe extern "C" fn inchi_rs_string_free(string: *mut c_char) {
+pub unsafe extern "C" fn chemomer_string_free(string: *mut c_char) {
     if string.is_null() {
         return;
     }
@@ -36,7 +36,7 @@ pub unsafe extern "C" fn inchi_rs_string_free(string: *mut c_char) {
 /// The message of the last error on the calling thread, or null.
 /// The storage stays owned by the thread until the next error.
 #[no_mangle]
-pub extern "C" fn inchi_rs_last_error() -> *const c_char {
+pub extern "C" fn chemomer_last_error() -> *const c_char {
     LAST_ERROR.with(|slot| {
         slot.borrow()
             .as_ref()
@@ -46,12 +46,12 @@ pub extern "C" fn inchi_rs_last_error() -> *const c_char {
 }
 
 /// Derives the identifier from a V2000 molfile. Null on error (see
-/// [`inchi_rs_last_error`]).
+/// [`chemomer_last_error`]).
 ///
 /// # Safety
 /// `molfile` must be a NUL-terminated UTF-8 C string.
 #[no_mangle]
-pub unsafe extern "C" fn inchi_rs_from_molfile(molfile: *const c_char) -> *mut c_char {
+pub unsafe extern "C" fn chemomer_from_molfile(molfile: *const c_char) -> *mut c_char {
     let identifier = derive(molfile, |engine| engine.inchi_string());
     match identifier {
         Ok(text) => match CString::new(text) {
@@ -73,7 +73,7 @@ pub unsafe extern "C" fn inchi_rs_from_molfile(molfile: *const c_char) -> *mut c
 /// # Safety
 /// `molfile` must be a NUL-terminated UTF-8 C string.
 #[no_mangle]
-pub unsafe extern "C" fn inchi_rs_inchikey(molfile: *const c_char) -> *mut c_char {
+pub unsafe extern "C" fn chemomer_inchikey(molfile: *const c_char) -> *mut c_char {
     let key = derive(molfile, |engine| engine.inchikey());
     match key {
         Ok(key) => match CString::new(key) {
@@ -92,7 +92,7 @@ pub unsafe extern "C" fn inchi_rs_inchikey(molfile: *const c_char) -> *mut c_cha
 
 /// The ABI version: 1.
 #[no_mangle]
-pub extern "C" fn inchi_rs_ffi_version() -> u32 {
+pub extern "C" fn chemomer_ffi_version() -> u32 {
     1
 }
 
@@ -120,25 +120,25 @@ mod tests {
     fn the_abi_derives_identifier_and_key() {
         let molfile = CString::new(WATER).unwrap();
         unsafe {
-            let identifier = inchi_rs_from_molfile(molfile.as_ptr());
+            let identifier = chemomer_from_molfile(molfile.as_ptr());
             assert!(!identifier.is_null());
             let text = CStr::from_ptr(identifier).to_string_lossy().into_owned();
             assert_eq!(text, "InChI=1S/H2O/h1H2");
-            inchi_rs_string_free(identifier);
+            chemomer_string_free(identifier);
 
-            let key = inchi_rs_inchikey(molfile.as_ptr());
+            let key = chemomer_inchikey(molfile.as_ptr());
             let text = CStr::from_ptr(key).to_string_lossy().into_owned();
             assert_eq!(text, "XLYOFNOQVPJJNP-UHFFFAOYSA-N");
-            inchi_rs_string_free(key);
+            chemomer_string_free(key);
         }
     }
 
     #[test]
     fn errors_surface_through_the_thread_local() {
         unsafe {
-            let identifier = inchi_rs_from_molfile(std::ptr::null());
+            let identifier = chemomer_from_molfile(std::ptr::null());
             assert!(identifier.is_null());
-            let message = CStr::from_ptr(inchi_rs_last_error())
+            let message = CStr::from_ptr(chemomer_last_error())
                 .to_string_lossy()
                 .into_owned();
             assert!(message.contains("null"), "{message}");
@@ -149,9 +149,9 @@ mod tests {
     fn invalid_molfiles_report_the_parse_error() {
         let molfile = CString::new("not a molfile").unwrap();
         unsafe {
-            let identifier = inchi_rs_from_molfile(molfile.as_ptr());
+            let identifier = chemomer_from_molfile(molfile.as_ptr());
             assert!(identifier.is_null());
-            let message = CStr::from_ptr(inchi_rs_last_error())
+            let message = CStr::from_ptr(chemomer_last_error())
                 .to_string_lossy()
                 .into_owned();
             assert!(message.contains("molfile"), "{message}");

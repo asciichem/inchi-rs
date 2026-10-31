@@ -13,14 +13,14 @@ fn bench_identity(c: &mut Criterion) {
     for (name, molfile) in [("water", WATER), ("l-alanine", ALANINE)] {
         group.bench_function(format!("{name} inchi_string"), |b| {
             b.iter(|| {
-                inchi_rs::Engine::from_molfile(molfile)
+                chemomer::Engine::from_molfile(molfile)
                     .and_then(|engine| engine.inchi_string())
                     .expect("derives")
             })
         });
         group.bench_function(format!("{name} inchikey"), |b| {
             b.iter(|| {
-                inchi_rs::Engine::from_molfile(molfile)
+                chemomer::Engine::from_molfile(molfile)
                     .and_then(|engine| engine.inchikey())
                     .expect("derives")
             })

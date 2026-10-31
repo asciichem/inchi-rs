@@ -2,7 +2,7 @@
 //! identifier with the oracle recording — the retirement radar.
 use std::fs;
 
-use inchi_rs::Engine;
+use chemomer::Engine;
 
 fn main() {
     let dir = std::env::var("INCHI_TESTS")

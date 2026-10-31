@@ -1,4 +1,4 @@
-# inchi-rs — architecture
+# chemomer — architecture
 
 The Rust InChI engine. Design principles: **encapsulation** (every
 concern behind a module boundary; callers see types, not column
@@ -6,7 +6,7 @@ arithmetic or rule tables), **open/closed** (new InChI layers,
 invariant schemes, and input formats join by adding modules and
 registering implementations — never by editing the engine core), and
 **tests extracted from old InChI**: the oracle corpus in
-[inchi-tests](https://github.com/asciichem/inchi-tests) is recorded
+[inchi-tests](https://github.com/chemomer/inchi-tests) is recorded
 from the IUPAC reference implementation and gates this engine
 byte-for-byte. The oracle is a development-time test oracle only —
 nothing from the InChI Trust ships here.

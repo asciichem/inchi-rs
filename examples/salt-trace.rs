@@ -1,7 +1,7 @@
 //! Trace the annihilation for one fixture.
 use std::fs;
 
-use inchi_rs::Engine;
+use chemomer::Engine;
 
 fn main() {
     let id = std::env::args().nth(1).expect("id");
@@ -23,11 +23,11 @@ fn main() {
                 }
                 println!(
                     "plan p: {:?}",
-                    inchi_rs::layers::standardization::proton_layer(engine.structure())
+                    chemomer::layers::standardization::proton_layer(engine.structure())
                 );
                 println!(
                     "plan q: {:?}",
-                    inchi_rs::layers::standardization::charge_layer(engine.structure())
+                    chemomer::layers::standardization::charge_layer(engine.structure())
                 );
                 return;
             }

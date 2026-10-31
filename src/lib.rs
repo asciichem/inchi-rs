@@ -1,5 +1,6 @@
-//! inchi-rs — the Rust InChI engine, gated byte-for-byte by the
-//! oracle corpus in [inchi-tests](https://github.com/asciichem/inchi-tests).
+//! chemomer — the chemical molecule model + identity engine,
+//! gated byte-for-byte by the oracle corpus in
+//! [inchi-tests](https://github.com/chemomer/inchi-tests).
 //!
 //! Architecture: an [`Engine`] façade over encapsulated concerns —
 //! `molfile` reads the input edge, `graph` owns molecular-graph

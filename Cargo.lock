@@ -120,6 +120,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "chemomer"
+version = "0.1.0"
+dependencies = [
+ "criterion",
+ "napi",
+ "napi-derive",
+ "proptest",
+ "pyo3",
+ "serde_json",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "ciborium"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -370,19 +383,6 @@ name = "hermit-abi"
 version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e17592d60ebacc7d5e169f4663c5f84f9161cc90328abcfe8456f41e4dfcb284"
-
-[[package]]
-name = "inchi-rs"
-version = "0.1.0"
-dependencies = [
- "criterion",
- "napi",
- "napi-derive",
- "proptest",
- "pyo3",
- "serde_json",
- "wasm-bindgen",
-]
 
 [[package]]
 name = "indexmap"

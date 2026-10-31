@@ -4,7 +4,7 @@
 use std::fs;
 use std::path::PathBuf;
 
-use inchi_rs::Engine;
+use chemomer::Engine;
 
 fn main() {
     let dir = std::env::var("INCHI_TESTS")
