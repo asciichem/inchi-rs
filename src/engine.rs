@@ -10,6 +10,10 @@ use crate::molfile;
 
 pub struct Engine {
     structure: Structure,
+    /// The submitted structure exactly as parsed — explicit hydrogens
+    /// and input charges intact. The AuxInfo reversibility block
+    /// echoes this, not the normalized form.
+    original: Structure,
     layers: Vec<Box<dyn LayerEmitter>>,
 }
 
@@ -18,7 +22,8 @@ impl Engine {
     /// pairs (terminal N⁺–O⁻), folds explicit hydrogen atoms onto
     /// their carriers, and equips the default layer registry.
     pub fn from_molfile(input: &str) -> Result<Self> {
-        let mut structure = molfile::parse(input)?;
+        let original = molfile::parse(input)?;
+        let mut structure = original.clone();
         standardization::normalize_internal_salts(&mut structure);
         structure.fold_explicit_hydrogens();
         // The (DE)PROTONATION normalization: charged structures read
@@ -63,6 +68,7 @@ impl Engine {
         }
         Ok(Engine {
             structure,
+            original,
             layers: default_layers(proton_shift),
         })
     }
@@ -123,6 +129,13 @@ impl Engine {
     /// SHA-256 key, computed natively (see [`crate::key`]).
     pub fn inchikey(&self) -> Result<String> {
         crate::key::inchikey(&self.inchi_string()?)
+    }
+
+    /// The AuxInfo line beside the identifier: canonical numbering,
+    /// equivalence classes, charges, and the echo of the submitted
+    /// structure (see [`crate::aux`]).
+    pub fn aux_string(&self) -> Result<String> {
+        crate::aux::aux_info(&self.original, &self.structure)
     }
 }
 
