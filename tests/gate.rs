@@ -159,8 +159,12 @@ fn the_aux_info_equals_the_oracle_recording() {
                 .expect("valid fixtures");
         cases.extend(parsed);
     }
-    let triage: serde_json::Value = match fs::read_to_string(dir.join("corpus/triage.json")) {
-        Ok(text) => serde_json::from_str(&text).expect("valid triage"),
+    // The aux debts live in their own dated ledger: an entry here
+    // marks an EXPECTED aux failure only — the identifier gate's
+    // triage.json must not learn about them, or their passing
+    // identifiers read as retirements.
+    let triage: serde_json::Value = match fs::read_to_string(dir.join("corpus/aux-triage.json")) {
+        Ok(text) => serde_json::from_str(&text).expect("valid aux triage"),
         Err(_) => serde_json::Value::Null,
     };
 
