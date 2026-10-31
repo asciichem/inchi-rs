@@ -261,8 +261,9 @@ fn reversibility_block(original: &Structure) -> String {
 
 /// The bond-type character: `s`/`d`/`t`/`a`, with the wedge codes
 /// rendered from the perspective of the endpoint currently listed —
-/// up-at-this-end `p`, down-at-this-end `n`, either `v` (the
-/// reference's WriteOrigBonds switch).
+/// an up-wedge is `p` at its first-listed atom and `n` at the other
+/// (up here is down there); a dash is `P`/`N` the same way; either
+/// is `v` (the reference's WriteOrigBonds switch).
 fn bond_char(kind: u32, stereo: u8, this_end_first: bool) -> char {
     match kind {
         2 => 'd',
@@ -278,9 +279,9 @@ fn bond_char(kind: u32, stereo: u8, this_end_first: bool) -> char {
             }
             6 => {
                 if this_end_first {
-                    'n'
+                    'P'
                 } else {
-                    'p'
+                    'N'
                 }
             }
             4 => 'v',
