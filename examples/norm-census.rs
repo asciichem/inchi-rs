@@ -36,7 +36,7 @@ fn main() {
             let ranks = chemomer::layers::hydrogen::canonical_ranks_for(s);
             let groups = chemomer::canonical::tautomer::mobile_groups(s, &counts, &ranks);
             let real_h = |g: &chemomer::canonical::tautomer::MobileGroup| g.count > g.charge;
-            let taut = groups.iter().any(|g| real_h(g));
+            let taut = groups.iter().any(&real_h);
             let minus = groups.iter().any(|g| real_h(g) && g.charge > 0);
             let hard = s.protons_hard_moved;
             let pinned = s.atoms.iter().all(|a| a.h_pinned);

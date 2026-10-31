@@ -262,21 +262,25 @@ pub fn canonical_ranks_and_symmetry(
     (ranks, informed_symmetry)
 }
 
+/// The stereo-informed ranking verdict: ranks and symmetry of the
+/// winning pass, plus the inversion comparison `(main_pairs,
+/// inv_pairs, sign)` — sign is -1 when the inverted pass won (its
+/// numbering was adopted), 0 when the stereo rows came out equal, 1
+/// when the absolute pass won on rows alone.
+pub type StereoRanking = (Vec<u32>, Vec<u32>, (Vec<(u32, u32)>, Vec<(u32, u32)>, i32));
+
 /// Final canonical rank (1-based) per atom, plus the orbit-minimal
 /// symmetry class per atom — with the terminal compare extended by
 /// the stereo rows (the reference's stereo canonicalization, whose
 /// numbering the aux speaks). Returns the winning pass's ranks and
-/// symmetry plus the inversion verdict: `(main_pairs, inv_pairs,
-/// sign)` where sign is -1 when the inverted pass won (its numbering
-/// was adopted), 0 when the stereo rows came out equal, 1 when the
-/// absolute pass won on rows alone.
+/// symmetry plus the inversion verdict (see [`StereoRanking`]).
 pub fn canonical_ranks_and_symmetry_stereo(
     adjacency: &[Vec<usize>],
     invariants: &[(u16, u16)],
     hydrogens: &[u32],
     groups: &[(u32, Vec<usize>)],
     centers: &[(usize, Vec<usize>, u32)],
-) -> (Vec<u32>, Vec<u32>, (Vec<(u32, u32)>, Vec<(u32, u32)>, i32)) {
+) -> StereoRanking {
     let run = |flip: bool| {
         let (ranks, symmetry) =
             search_with_stereo(adjacency, invariants, hydrogens, groups, centers, flip);
